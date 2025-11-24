@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+    LaunchAgent to auto-start Slurm status monitoring script on macOS login
+
+    Installation:
+    1. Copy this file to ~/Library/LaunchAgents/
+    2. Rename it (e.g., com.myusername.slurm-status.plist)
+    3. Update USER and YOUR_REMOTE_SERVER placeholders below
+    4. Update script path if different
+    5. Load with: launchctl load ~/Library/LaunchAgents/com.myusername.slurm-status.plist
+    -->
+
+    <key>Label</key>
+    <string>com.user.slurm-status</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <!-- Update this path to where you cloned the repo -->
+        <string>/Users/USER/vscode-slurm-status-bar/scripts/slurm_monitor.sh</string>
+        <!-- Update this to your remote Slurm cluster hostname -->
+        <string>YOUR_REMOTE_SERVER</string>
+    </array>
+
+    <!-- Start automatically on login -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Keep the script running (restart if it crashes) -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Optional: Log output for debugging -->
+    <key>StandardOutPath</key>
+    <string>/tmp/slurm-status.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/slurm-status.err</string>
+</dict>
+</plist>
