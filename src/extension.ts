@@ -82,7 +82,7 @@ function updateStatusBar(): void {
         if (error) {
             if (error.code === 'ENOENT') {
                 statusBarItem.text = '$(circle-slash) No Slurm status';
-                statusBarItem.tooltip = `File not found: ${FILE_PATH}\n\nRun your slurm_status_bar_emojis.sh script to create it.`;
+                statusBarItem.tooltip = `File not found: ${FILE_PATH}\n\nRun your slurm_monitor.sh or slurm_status_bar_emojis.sh script to create it. You can pass one or more cluster aliases.`;
             } else {
                 console.error('Error reading file:', error);
                 statusBarItem.text = '$(warning) Error reading file';
@@ -93,7 +93,7 @@ function updateStatusBar(): void {
             if (content) {
                 // Display the emoji status directly
                 statusBarItem.text = content;
-                statusBarItem.tooltip = `Slurm Job Status\n\nRunning: 🟢\nPending: 🟡\nCompleting: 🔵\nFinished: ⚪\n\nUpdates every second`;
+                statusBarItem.tooltip = `Slurm Job Status\n\nDisplays the merged status from the configured cluster aliases.\nUpdates every second.`;
             } else {
                 statusBarItem.text = '$(circle-outline) Empty';
                 statusBarItem.tooltip = 'Status file is empty';

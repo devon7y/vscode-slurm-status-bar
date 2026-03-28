@@ -1,6 +1,6 @@
 # VS Code Slurm Status Bar
 
-A VS Code extension that displays real-time Slurm job status directly in your status bar. Monitor your HPC cluster jobs without leaving your editor!
+A VS Code extension that displays real-time Slurm job status directly in your status bar. Monitor your HPC cluster jobs without leaving your editor.
 
 ## Features
 
@@ -9,6 +9,7 @@ A VS Code extension that displays real-time Slurm job status directly in your st
   - Countdown timer for running jobs (shows time remaining)
   - Count-up timer for pending jobs (shows wait time)
 - **Multiple job support**: View all your jobs at once with clear formatting
+- **Multi-cluster support**: Merge jobs from multiple Slurm clusters into one status line
 - **Flicker-free updates**: Atomic file writes prevent UI glitches
 - **Remote-SSH compatible**: Works seamlessly with VS Code's Remote-SSH extension
 - **Automatic updates**: Set it and forget it with LaunchAgent/systemd auto-start
@@ -16,9 +17,15 @@ A VS Code extension that displays real-time Slurm job status directly in your st
 ## Requirements
 
 - **VS Code** 1.60.0 or higher
-- **SSH access** to a Slurm cluster
-- **Bash** 4.0+ (for the monitoring script)
+- **SSH access** to one or more Slurm clusters
+- **Python** 3.8+ (for the monitoring backend)
 - **SSH key authentication** (passwordless login to cluster)
+
+Optional for headless passcode-based HPC aliases:
+
+- `sshpass`
+- a passcode file pointed to by `SLURM_STATUS_BAR_SSHPASS_FILE`
+  - defaults to `~/.claude/hpc_passcode` if that file exists
 
 ## Installation
 
@@ -49,10 +56,10 @@ Search for "Slurm Status Bar" in the VS Code Extensions marketplace.
 
 3. **Test the script manually**:
    ```bash
-   ./scripts/slurm_monitor.sh YOUR_CLUSTER_HOSTNAME
+   ./scripts/slurm_monitor.sh YOUR_CLUSTER_ONE YOUR_CLUSTER_TWO
    ```
 
-   Replace `YOUR_CLUSTER_HOSTNAME` with your Slurm cluster's hostname (e.g., `mycluster.university.edu`).
+   Replace the placeholders with one or more Slurm cluster hostnames or SSH aliases.
 
 4. **Verify it's working**:
    ```bash
@@ -76,7 +83,7 @@ Search for "Slurm Status Bar" in the VS Code Extensions marketplace.
 
    Update these values:
    - Replace `USER` with your username
-   - Replace `YOUR_REMOTE_SERVER` with your cluster hostname
+   - Replace the cluster placeholders with one or more cluster hostnames
    - Update the script path if you cloned to a different location
 
 3. **Load the LaunchAgent**:
@@ -100,7 +107,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/path/to/vscode-slurm-status-bar/scripts/slurm_monitor.sh YOUR_CLUSTER_HOSTNAME
+ExecStart=/path/to/vscode-slurm-status-bar/scripts/slurm_monitor.sh YOUR_CLUSTER_ONE YOUR_CLUSTER_TWO
 Restart=always
 RestartSec=10
 
@@ -120,9 +127,10 @@ systemctl --user start slurm-status.service
 
 The monitoring script (`scripts/slurm_monitor.sh`) has the following behavior:
 
-- **Refresh interval**: Queries `squeue` every 60 seconds (configurable in script)
+- **Refresh interval**: Queries `squeue` on each configured cluster every 60 seconds (configurable in script)
 - **Local updates**: Updates display every 1 second (smooth countdown/countup)
 - **Status file**: Writes to `~/.slurm_status_bar.txt`
+- **SSH behavior**: Reuses existing SSH ControlMaster sessions and can fall back to `sshpass` with `SLURM_STATUS_BAR_SSHPASS_FILE`
 
 To change the refresh interval, edit `REFRESH_INTERVAL` in the script:
 ```bash
@@ -140,15 +148,16 @@ The extension:
 
 ```
 ┌─────────────────┐
-│  Slurm Cluster  │
-│   (squeue)      │
-└────────┬────────┘
+│ Slurm Clusters   │
+│   (squeue)       │
+└────────┬─────────┘
          │ SSH every 60s
          ▼
 ┌─────────────────────────┐
 │  Monitoring Script      │
 │  slurm_monitor.sh       │
 │  - Fetches job data     │
+│  - Merges clusters      │
 │  - Counts down/up       │
 │  - Updates every 1s     │
 └────────┬────────────────┘
@@ -166,6 +175,11 @@ The extension:
 ```
 
 ### Status Format
+
+**Fairshare + jobs**:
+```
+Fir: 0.372 | Ror: 0.064 | job1 (R) 1:23:45 | job2 (PD) 3:12
+```
 
 **Running jobs** (count down):
 ```
@@ -200,7 +214,7 @@ job1 (R) 1:23:45 | job2 (PD) 3:12 | job3 (R) 45:20
 **Solution**:
 1. Check if script is running: `ps aux | grep slurm_monitor`
 2. Check if file exists: `cat ~/.slurm_status_bar.txt`
-3. Manually run script to test: `./scripts/slurm_monitor.sh YOUR_CLUSTER`
+3. Manually run script to test: `./scripts/slurm_monitor.sh YOUR_CLUSTER_ONE YOUR_CLUSTER_TWO`
 
 ### Status not updating
 

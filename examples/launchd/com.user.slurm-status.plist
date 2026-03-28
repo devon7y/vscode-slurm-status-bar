@@ -8,7 +8,7 @@
     Installation:
     1. Copy this file to ~/Library/LaunchAgents/
     2. Rename it (e.g., com.myusername.slurm-status.plist)
-    3. Update USER and YOUR_REMOTE_SERVER placeholders below
+    3. Update USER and the cluster placeholders below
     4. Update script path if different
     5. Load with: launchctl load ~/Library/LaunchAgents/com.myusername.slurm-status.plist
     -->
@@ -21,8 +21,9 @@
         <string>/bin/bash</string>
         <!-- Update this path to where you cloned the repo -->
         <string>/Users/USER/vscode-slurm-status-bar/scripts/slurm_monitor.sh</string>
-        <!-- Update this to your remote Slurm cluster hostname -->
-        <string>YOUR_REMOTE_SERVER</string>
+        <!-- Update these to one or more remote Slurm cluster hostnames -->
+        <string>YOUR_CLUSTER_ONE</string>
+        <string>YOUR_CLUSTER_TWO</string>
     </array>
 
     <!-- Start automatically on login -->
