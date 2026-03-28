@@ -8,9 +8,12 @@
     Installation:
     1. Copy this file to ~/Library/LaunchAgents/
     2. Rename it (e.g., com.myusername.slurm-status.plist)
-    3. Update USER and the cluster placeholders below
+    3. Update USER, the environment variables, and the cluster placeholders below
     4. Update script path if different
-    5. Load with: launchctl load ~/Library/LaunchAgents/com.myusername.slurm-status.plist
+    5. Load with:
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.myusername.slurm-status.plist
+       launchctl enable gui/$(id -u)/com.myusername.slurm-status
+       launchctl kickstart -k gui/$(id -u)/com.myusername.slurm-status
     -->
 
     <key>Label</key>
@@ -25,6 +28,29 @@
         <string>YOUR_CLUSTER_ONE</string>
         <string>YOUR_CLUSTER_TWO</string>
     </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Required when your local username differs from your cluster username -->
+        <key>SLURM_STATUS_BAR_REMOTE_USER</key>
+        <string>YOUR_CLUSTER_USERNAME</string>
+
+        <!-- Recommended: pin the fairshare row to the right account -->
+        <key>SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT</key>
+        <string>YOUR_GPU_ACCOUNT</string>
+
+        <!-- Optional: use per-cluster overrides instead of the global account above -->
+        <!--
+        <key>SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT_FIR</key>
+        <string>YOUR_FIR_GPU_ACCOUNT</string>
+        <key>SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT_ROR</key>
+        <string>YOUR_ROR_GPU_ACCOUNT</string>
+        -->
+
+        <!-- Optional: passcode file for sshpass-based reconnects -->
+        <key>SLURM_STATUS_BAR_SSHPASS_FILE</key>
+        <string>/Users/USER/.claude/hpc_passcode</string>
+    </dict>
 
     <!-- Start automatically on login -->
     <key>RunAtLoad</key>

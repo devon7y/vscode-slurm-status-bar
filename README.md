@@ -1,102 +1,245 @@
 # VS Code Slurm Status Bar
 
-A VS Code extension that displays real-time Slurm job status directly in your status bar. Monitor your HPC cluster jobs without leaving your editor.
+A VS Code extension that shows Slurm job status in the status bar by reading a local file that is continuously updated by a small monitor script.
 
-## Features
+The current monitor can:
 
-- **Real-time monitoring**: Status updates every second in VS Code
-- **Smart timers**:
-  - Countdown timer for running jobs (shows time remaining)
-  - Count-up timer for pending jobs (shows wait time)
-- **Multiple job support**: View all your jobs at once with clear formatting
-- **Multi-cluster support**: Merge jobs from multiple Slurm clusters into one status line
-- **Flicker-free updates**: Atomic file writes prevent UI glitches
-- **Remote-SSH compatible**: Works seamlessly with VS Code's Remote-SSH extension
-- **Automatic updates**: Set it and forget it with LaunchAgent/systemd auto-start
+- merge jobs from multiple clusters into one line
+- show fairshare values before the job list
+- count down running jobs and count up pending jobs locally between refreshes
+- survive transient SSH issues better by reusing existing SSH ControlMaster sessions
+
+## What You Install
+
+This repo has two parts:
+
+1. The VS Code extension.
+2. The monitor script that writes `~/.slurm_status_bar.txt`.
+
+The extension does not talk to Slurm directly. It only reads `~/.slurm_status_bar.txt` every second. The monitor script is the part that runs `ssh`, `squeue`, and `sshare`.
 
 ## Requirements
 
-- **VS Code** 1.60.0 or higher
-- **SSH access** to one or more Slurm clusters
-- **Python** 3.8+ (for the monitoring backend)
-- **SSH key authentication** (passwordless login to cluster)
+You need:
 
-Optional for headless passcode-based HPC aliases:
+- VS Code 1.60.0 or newer
+- `ssh`
+- `python3` 3.8 or newer
+- access to one or more Slurm clusters where `squeue` and `sshare` work for your account
+
+Recommended:
+
+- SSH aliases in `~/.ssh/config`
+- SSH ControlMaster enabled for faster polling
+- key-based SSH login
+
+Optional:
 
 - `sshpass`
-- a passcode file pointed to by `SLURM_STATUS_BAR_SSHPASS_FILE`
-  - defaults to `~/.claude/hpc_passcode` if that file exists
+- a passcode file for headless reconnects, usually `~/.claude/hpc_passcode`
 
-## Installation
+## Quick Start
 
-### Step 1: Install the VS Code Extension
+If you already have working SSH aliases such as `fir` and `ror`, this is the shortest path:
 
-#### Option A: From VSIX (Manual Installation)
-1. Download the latest `.vsix` file from [Releases](https://github.com/devon7y/vscode-slurm-status-bar/releases)
-2. Open VS Code
-3. Press `Cmd+Shift+P` (macOS) or `Ctrl+Shift+P` (Windows/Linux)
-4. Type "Extensions: Install from VSIX"
-5. Select the downloaded `.vsix` file
+```bash
+git clone https://github.com/devon7y/vscode-slurm-status-bar.git
+cd vscode-slurm-status-bar
+chmod +x scripts/slurm_monitor.sh
 
-#### Option B: From VS Code Marketplace (Coming Soon)
-Search for "Slurm Status Bar" in the VS Code Extensions marketplace.
+export SLURM_STATUS_BAR_REMOTE_USER=YOUR_CLUSTER_USERNAME
+export SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT=YOUR_GPU_ACCOUNT
 
-### Step 2: Set Up the Monitoring Script
+./scripts/slurm_monitor.sh fir ror
+```
 
-1. **Clone this repository** (or download the script):
-   ```bash
-   git clone https://github.com/devon7y/vscode-slurm-status-bar.git
-   cd vscode-slurm-status-bar
-   ```
+Then open another terminal and confirm the status file is being updated:
 
-2. **Make the script executable**:
-   ```bash
-   chmod +x scripts/slurm_monitor.sh
-   ```
+```bash
+cat ~/.slurm_status_bar.txt
+```
 
-3. **Test the script manually**:
-   ```bash
-   ./scripts/slurm_monitor.sh YOUR_CLUSTER_ONE YOUR_CLUSTER_TWO
-   ```
+You should see output like:
 
-   Replace the placeholders with one or more Slurm cluster hostnames or SSH aliases.
+```text
+Fir: 0.372 | Ror: 0.064 | my_job (R) 1:23:45 | other_job (PD) 2:17
+```
 
-4. **Verify it's working**:
-   ```bash
-   cat ~/.slurm_status_bar.txt
-   ```
-   You should see your job status (or "No active jobs").
+After that, set the monitor to auto-start on login and install the VS Code extension from a `.vsix`.
 
-### Step 3: Auto-Start on Login (Recommended)
+## 1. Install the VS Code Extension
 
-#### For macOS (LaunchAgent)
+### Option A: Install a Release `.vsix`
 
-1. **Copy the example LaunchAgent**:
-   ```bash
-   cp examples/launchd/com.user.slurm-status.plist ~/Library/LaunchAgents/
-   ```
+1. Download the latest `.vsix` from [Releases](https://github.com/devon7y/vscode-slurm-status-bar/releases).
+2. In VS Code, open the command palette.
+3. Run `Extensions: Install from VSIX`.
+4. Select the downloaded file.
 
-2. **Edit the file** to customize it:
-   ```bash
-   nano ~/Library/LaunchAgents/com.user.slurm-status.plist
-   ```
+### Option B: Build Your Own `.vsix`
 
-   Update these values:
-   - Replace `USER` with your username
-   - Replace the cluster placeholders with one or more cluster hostnames
-   - Update the script path if you cloned to a different location
+```bash
+git clone https://github.com/devon7y/vscode-slurm-status-bar.git
+cd vscode-slurm-status-bar
+npm install
+npm run compile
+npx @vscode/vsce package
+```
 
-3. **Load the LaunchAgent**:
-   ```bash
-   launchctl load ~/Library/LaunchAgents/com.user.slurm-status.plist
-   ```
+That creates a `.vsix` you can install locally.
 
-4. **Verify it's running**:
-   ```bash
-   launchctl list | grep slurm
-   ```
+## 2. Configure SSH Access
 
-#### For Linux (systemd)
+The monitor works best if you can run `ssh <alias> "squeue ..."` without interactive prompts.
+
+Example `~/.ssh/config`:
+
+```sshconfig
+Host fir
+  HostName fir.alliancecan.ca
+  User YOUR_CLUSTER_USERNAME
+  ControlMaster auto
+  ControlPersist 8h
+  ControlPath ~/.ssh/cm-%C
+
+Host ror
+  HostName rorqual.alliancecan.ca
+  User YOUR_CLUSTER_USERNAME
+  ControlMaster auto
+  ControlPersist 8h
+  ControlPath ~/.ssh/cm-%C
+```
+
+Notes:
+
+- You can use any alias names, not just `fir` and `ror`.
+- If the alias is not `fir` or `ror`, the status line uses the alias text directly.
+- If your macOS or Linux username is different from your cluster username, set `SLURM_STATUS_BAR_REMOTE_USER`.
+
+Before using the monitor, test SSH manually:
+
+```bash
+ssh fir "squeue -u YOUR_CLUSTER_USERNAME --noheader"
+ssh fir "sshare -u YOUR_CLUSTER_USERNAME -l -P"
+```
+
+Repeat that for each cluster alias you plan to monitor.
+
+## 3. Choose the Right Environment Variables
+
+The monitor uses environment variables so you do not have to edit the script for normal setup.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `SLURM_STATUS_BAR_REMOTE_USER` | Usually | Cluster username when it differs from your local username |
+| `SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT` | Recommended | Account row to read from `sshare` for fairshare display |
+| `SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT_<REMOTE>` | Optional | Per-cluster fairshare account override, for example `SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT_FIR` |
+| `SLURM_STATUS_BAR_SSHPASS_FILE` | Optional | Passcode file used by `sshpass` if no ControlMaster session is active |
+
+Fairshare selection behavior:
+
+- If `SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT_<REMOTE>` is set, that account is used for that remote.
+- Otherwise, if `SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT` is set, that account is used for all remotes.
+- Otherwise, the monitor auto-selects the first fairshare row for your user that looks GPU-related.
+- If multiple rows are plausible, the monitor logs a warning to stderr and picks one. In that case, set the account explicitly.
+
+If fairshare lookup fails, the display shows `?` for that cluster and the job list still updates.
+
+## 4. Run the Monitor Manually First
+
+Always test the monitor manually before setting up LaunchAgent or systemd.
+
+### Single cluster
+
+```bash
+export SLURM_STATUS_BAR_REMOTE_USER=YOUR_CLUSTER_USERNAME
+export SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT=YOUR_GPU_ACCOUNT
+./scripts/slurm_monitor.sh fir
+```
+
+### Multiple clusters
+
+```bash
+export SLURM_STATUS_BAR_REMOTE_USER=YOUR_CLUSTER_USERNAME
+export SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT_FIR=YOUR_FIR_GPU_ACCOUNT
+export SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT_ROR=YOUR_ROR_GPU_ACCOUNT
+./scripts/slurm_monitor.sh fir ror
+```
+
+### Passcode-based fallback
+
+If your workflow uses a passcode file and `sshpass`, set:
+
+```bash
+export SLURM_STATUS_BAR_SSHPASS_FILE="$HOME/.claude/hpc_passcode"
+```
+
+The monitor first tries `ssh -O check <remote>`. If that existing shared SSH session is not available, it can fall back to `sshpass` with the configured passcode file.
+
+### Verify the result
+
+In another shell:
+
+```bash
+cat ~/.slurm_status_bar.txt
+```
+
+If the monitor is healthy:
+
+- the file exists
+- the file changes over time
+- the prefix contains one fairshare value per configured cluster
+- the rest of the line contains zero or more jobs
+
+## 5. Auto-Start on Login
+
+### macOS with LaunchAgent
+
+1. Copy the example plist:
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cp examples/launchd/com.user.slurm-status.plist ~/Library/LaunchAgents/
+```
+
+2. Edit it:
+
+```bash
+nano ~/Library/LaunchAgents/com.user.slurm-status.plist
+```
+
+3. Update:
+
+- the script path
+- the cluster aliases in `ProgramArguments`
+- `SLURM_STATUS_BAR_REMOTE_USER`
+- `SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT` or per-cluster fairshare env vars
+- optionally `SLURM_STATUS_BAR_SSHPASS_FILE`
+
+4. Load it:
+
+```bash
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.user.slurm-status.plist
+launchctl enable "gui/$(id -u)/com.user.slurm-status"
+launchctl kickstart -k "gui/$(id -u)/com.user.slurm-status"
+```
+
+5. Check status and logs:
+
+```bash
+launchctl print "gui/$(id -u)/com.user.slurm-status"
+tail -f /tmp/slurm-status.log
+tail -f /tmp/slurm-status.err
+```
+
+If you update the plist later, unload and reload it:
+
+```bash
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.user.slurm-status.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.user.slurm-status.plist
+```
+
+### Linux with systemd user services
 
 Create `~/.config/systemd/user/slurm-status.service`:
 
@@ -107,7 +250,10 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/path/to/vscode-slurm-status-bar/scripts/slurm_monitor.sh YOUR_CLUSTER_ONE YOUR_CLUSTER_TWO
+Environment=SLURM_STATUS_BAR_REMOTE_USER=YOUR_CLUSTER_USERNAME
+Environment=SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT=YOUR_GPU_ACCOUNT
+Environment=SLURM_STATUS_BAR_SSHPASS_FILE=%h/.claude/hpc_passcode
+ExecStart=/path/to/vscode-slurm-status-bar/scripts/slurm_monitor.sh fir ror
 Restart=always
 RestartSec=10
 
@@ -115,199 +261,179 @@ RestartSec=10
 WantedBy=default.target
 ```
 
-Then enable and start:
+Then enable and start it:
+
 ```bash
+systemctl --user daemon-reload
 systemctl --user enable slurm-status.service
 systemctl --user start slurm-status.service
+systemctl --user status slurm-status.service
 ```
 
-## Configuration
+## 6. What the Status Line Means
 
-### Script Behavior
+Example:
 
-The monitoring script (`scripts/slurm_monitor.sh`) has the following behavior:
-
-- **Refresh interval**: Queries `squeue` on each configured cluster every 60 seconds (configurable in script)
-- **Local updates**: Updates display every 1 second (smooth countdown/countup)
-- **Status file**: Writes to `~/.slurm_status_bar.txt`
-- **SSH behavior**: Reuses existing SSH ControlMaster sessions and can fall back to `sshpass` with `SLURM_STATUS_BAR_SSHPASS_FILE`
-
-To change the refresh interval, edit `REFRESH_INTERVAL` in the script:
-```bash
-REFRESH_INTERVAL=60  # Change to desired seconds
+```text
+Fir: 0.372 | Ror: 0.064 | train_model (R) 1:23:45 | embed_docs (PD) 2:17
 ```
 
-### VS Code Extension Behavior
+Interpretation:
 
-The extension:
-- Reads `~/.slurm_status_bar.txt` every 1 second
-- Displays in the **left side** of the status bar (priority 0)
-- Shows tooltip with job state legend on hover
+- `Fir: 0.372` is the fairshare value selected from that cluster's `sshare` output
+- `Ror: 0.064` is the fairshare value for the second configured cluster
+- `train_model (R) 1:23:45` is a running job with time left from Slurm
+- `embed_docs (PD) 2:17` is a pending job counting up locally from when it was first seen
 
-## How It Works
+Common job state codes:
 
-```
-┌─────────────────┐
-│ Slurm Clusters   │
-│   (squeue)       │
-└────────┬─────────┘
-         │ SSH every 60s
-         ▼
-┌─────────────────────────┐
-│  Monitoring Script      │
-│  slurm_monitor.sh       │
-│  - Fetches job data     │
-│  - Merges clusters      │
-│  - Counts down/up       │
-│  - Updates every 1s     │
-└────────┬────────────────┘
-         │ Writes
-         ▼
-┌─────────────────────────┐
-│  ~/.slurm_status_bar.txt│
-└────────┬────────────────┘
-         │ Reads every 1s
-         ▼
-┌─────────────────────────┐
-│  VS Code Extension      │
-│  Displays in status bar │
-└─────────────────────────┘
-```
+- `R`: running
+- `PD`: pending
+- `CG`: completing
+- `CD`: completed
+- `F`: failed
+- `CA`: cancelled
 
-### Status Format
+## Configuration Details
 
-**Fairshare + jobs**:
-```
-Fir: 0.372 | Ror: 0.064 | job1 (R) 1:23:45 | job2 (PD) 3:12
-```
+### Refresh timing
 
-**Running jobs** (count down):
-```
-my_job (R) 28:45
-```
+- Remote refresh interval: `60` seconds
+- Local display update interval: `1` second
 
-**Pending jobs** (count up):
-```
-my_job (PD) 5:32
-```
+If you want to change the remote refresh interval, edit `REFRESH_INTERVAL` in [scripts/slurm_monitor.py](scripts/slurm_monitor.py).
 
-**Multiple jobs**:
-```
-job1 (R) 1:23:45 | job2 (PD) 3:12 | job3 (R) 45:20
-```
+### Backend layout
 
-### Job State Codes
+- [scripts/slurm_monitor.sh](scripts/slurm_monitor.sh) is a thin shell wrapper
+- [scripts/slurm_monitor.py](scripts/slurm_monitor.py) contains the real monitor logic
+- [src/extension.ts](src/extension.ts) is the VS Code extension that renders the status file
 
-- **R** - Running
-- **PD** - Pending (waiting in queue)
-- **CG** - Completing
-- **CD** - Completed
-- **F** - Failed
-- **CA** - Cancelled
+### How jobs are merged
+
+- Jobs from all configured remotes are merged into one line.
+- The job entries do not include the cluster name.
+- Internally, the monitor keys jobs by `remote:jobid` to avoid collisions.
 
 ## Troubleshooting
 
-### Extension shows "No Slurm status"
+### VS Code shows `No Slurm status`
 
-**Cause**: The status file doesn't exist or the script isn't running.
+Check:
 
-**Solution**:
-1. Check if script is running: `ps aux | grep slurm_monitor`
-2. Check if file exists: `cat ~/.slurm_status_bar.txt`
-3. Manually run script to test: `./scripts/slurm_monitor.sh YOUR_CLUSTER_ONE YOUR_CLUSTER_TWO`
+```bash
+cat ~/.slurm_status_bar.txt
+ps aux | grep slurm_monitor
+```
 
-### Status not updating
+If the file does not exist, run the monitor manually:
 
-**Cause**: Script may have crashed or SSH connection issues.
+```bash
+./scripts/slurm_monitor.sh fir ror
+```
 
-**Solution**:
-1. Check script logs (if using LaunchAgent): `cat /tmp/slurm-status.err`
-2. Test SSH connection: `ssh YOUR_CLUSTER squeue -u $USER`
-3. Restart the script
+### The file exists but fairshare shows `?`
 
-### Status bar shows old data
+This usually means one of these:
 
-**Cause**: Script stopped but file still exists with stale data.
+- `sshare` failed on that cluster
+- the wrong remote username is being used
+- the monitor could not find the right fairshare account row
 
-**Solution**:
-1. Kill any running scripts: `pkill -f slurm_monitor`
-2. Remove status file: `rm ~/.slurm_status_bar.txt`
-3. Restart the script
+Test directly:
 
-### SSH password prompts
+```bash
+ssh fir "sshare -u YOUR_CLUSTER_USERNAME -l -P"
+```
 
-**Cause**: SSH key authentication not set up.
+If your account row is ambiguous, set `SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT` or a per-remote override.
 
-**Solution**:
-1. Generate SSH key: `ssh-keygen -t ed25519`
-2. Copy to cluster: `ssh-copy-id YOUR_CLUSTER`
-3. Test passwordless login: `ssh YOUR_CLUSTER echo "success"`
+### Jobs do not appear even though `squeue` works manually
 
-### Status bar flickering (rare)
+Check whether the username differs between local and remote environments:
 
-**Cause**: Race condition between write and read (should be fixed in v0.4.0+).
+```bash
+echo "$USER"
+ssh fir "whoami"
+```
 
-**Solution**: Update to the latest version of both script and extension.
+If they differ, set:
+
+```bash
+export SLURM_STATUS_BAR_REMOTE_USER=YOUR_CLUSTER_USERNAME
+```
+
+### SSH prompts appear when running headlessly
+
+The monitor is designed to work best with existing SSH ControlMaster sessions. If your cluster setup needs a passcode file:
+
+1. install `sshpass`
+2. store the passcode in a file readable only by you
+3. set `SLURM_STATUS_BAR_SSHPASS_FILE`
+
+You can also avoid this entirely by setting up key-based SSH or starting the shared SSH session yourself before the monitor runs.
+
+### LaunchAgent starts but immediately exits
+
+Check:
+
+```bash
+tail -100 /tmp/slurm-status.err
+launchctl print "gui/$(id -u)/com.user.slurm-status"
+```
+
+Common causes:
+
+- wrong script path
+- missing `python3`
+- missing environment variables
+- SSH alias works in your interactive shell but not from LaunchAgent because `~/.ssh/config` or PATH assumptions are wrong
+
+### Stale status line
+
+If the process died but the file remains, clear the file and restart the monitor:
+
+```bash
+pkill -f slurm_monitor.py
+rm -f ~/.slurm_status_bar.txt
+```
+
+Then rerun the script manually before restarting your background service.
 
 ## Development
 
-### Building from Source
+Build from source:
 
 ```bash
-# Clone the repo
 git clone https://github.com/devon7y/vscode-slurm-status-bar.git
 cd vscode-slurm-status-bar
-
-# Install dependencies
 npm install
-
-# Compile TypeScript
 npm run compile
-
-# Package extension
 npx @vscode/vsce package
 ```
 
-This creates a `.vsix` file you can install.
+Project structure:
 
-### Project Structure
-
-```
+```text
 vscode-slurm-status-bar/
 ├── src/
-│   └── extension.ts        # Extension code
+│   └── extension.ts
 ├── scripts/
-│   └── slurm_monitor.sh    # Monitoring script
+│   ├── slurm_monitor.sh
+│   └── slurm_monitor.py
 ├── examples/
-│   └── launchd/            # Auto-start examples
-├── package.json            # Extension manifest
-├── tsconfig.json           # TypeScript config
+│   └── launchd/
+│       └── com.user.slurm-status.plist
+├── package.json
+├── tsconfig.json
 └── README.md
 ```
 
-### Contributing
-
-Contributions welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b my-feature`
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-Built for researchers and engineers who need to keep an eye on their HPC jobs while coding.
+MIT License. See [LICENSE](LICENSE).
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/devon7y/vscode-slurm-status-bar/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/devon7y/vscode-slurm-status-bar/discussions)
-
----
-
-Made with ❤️ for the HPC community
+- Issues: [GitHub Issues](https://github.com/devon7y/vscode-slurm-status-bar/issues)
+- Discussions: [GitHub Discussions](https://github.com/devon7y/vscode-slurm-status-bar/discussions)

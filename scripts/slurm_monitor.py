@@ -19,6 +19,7 @@ DEFAULT_PASSCODE_FILE = pathlib.Path.home() / ".claude" / "hpc_passcode"
 PASSCODE_FILE = pathlib.Path(
     os.environ.get("SLURM_STATUS_BAR_SSHPASS_FILE", str(DEFAULT_PASSCODE_FILE))
 )
+FAIRSHARE_ACCOUNT_ENV = "SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT"
 REFRESH_INTERVAL = 60
 TIME_PATTERN = re.compile(r"^(?:(\d+)-)?(\d+(?::\d+){0,2})$")
 REMOTE_LABELS = {"fir": "Fir", "ror": "Ror"}
@@ -34,6 +35,11 @@ class JobState:
 
 def log(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
+
+
+def env_key_for_remote(prefix: str, remote: str) -> str:
+    remote_key = re.sub(r"[^A-Za-z0-9]+", "_", remote).upper()
+    return f"{prefix}_{remote_key}"
 
 
 def run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -173,21 +179,60 @@ def fetch_fairshare(remote: str, user: str) -> str:
     except ValueError as exc:
         raise RuntimeError(f"missing sshare column on {remote}: {exc}") from exc
 
+    preferred_account = (
+        os.environ.get(env_key_for_remote(FAIRSHARE_ACCOUNT_ENV, remote))
+        or os.environ.get(FAIRSHARE_ACCOUNT_ENV)
+        or ""
+    ).strip()
+    matching_rows: list[tuple[str, str]] = []
+
     for line in lines[1:]:
         columns = [column.strip() for column in line.split("|")]
         if len(columns) <= max(account_idx, user_idx, fairshare_idx):
             continue
-        if (
-            columns[account_idx] == "def-jcaplan_gpu"
-            and columns[user_idx] == user
-        ):
-            fairshare = columns[fairshare_idx].strip()
-            try:
-                return f"{float(fairshare):.3f}"
-            except ValueError:
-                return fairshare
+        if columns[user_idx] != user:
+            continue
+        matching_rows.append(
+            (columns[account_idx], columns[fairshare_idx].strip())
+        )
 
-    raise RuntimeError(f"def-jcaplan_gpu fairshare row not found on {remote}")
+    if not matching_rows:
+        raise RuntimeError(f"no fairshare rows found for user {user} on {remote}")
+
+    selected_account = ""
+    selected_fairshare = ""
+
+    if preferred_account:
+        for account, fairshare in matching_rows:
+            if account == preferred_account:
+                selected_account = account
+                selected_fairshare = fairshare
+                break
+        if not selected_account:
+            raise RuntimeError(
+                f"fairshare row for account {preferred_account} not found on {remote}"
+            )
+    else:
+        gpu_rows = [
+            (account, fairshare)
+            for account, fairshare in matching_rows
+            if "gpu" in account.lower()
+        ]
+        candidates = gpu_rows or matching_rows
+        selected_account, selected_fairshare = candidates[0]
+        if len(candidates) > 1:
+            log(
+                "Warning: multiple fairshare rows matched on "
+                f"{remote}; using {selected_account}. "
+                f"Set {FAIRSHARE_ACCOUNT_ENV} or "
+                f"{env_key_for_remote(FAIRSHARE_ACCOUNT_ENV, remote)} "
+                "to override."
+            )
+
+    try:
+        return f"{float(selected_fairshare):.3f}"
+    except ValueError:
+        return selected_fairshare
 
 
 def refresh_jobs(
