@@ -24,32 +24,47 @@
         <string>/bin/bash</string>
         <!-- Update this path to where you cloned the repo -->
         <string>/Users/USER/vscode-slurm-status-bar/scripts/slurm_monitor.sh</string>
-        <!-- Update these to one or more remote Slurm cluster hostnames -->
-        <string>YOUR_CLUSTER_ONE</string>
-        <string>YOUR_CLUSTER_TWO</string>
+        <!-- Update these to the logical remotes you want to display -->
+        <string>fir</string>
+        <string>ror</string>
+        <string>nibi</string>
+        <string>tril</string>
     </array>
 
     <key>EnvironmentVariables</key>
     <dict>
+        <!-- LaunchAgent PATH is minimal on macOS; include common CLI locations -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+
         <!-- Required when your local username differs from your cluster username -->
         <key>SLURM_STATUS_BAR_REMOTE_USER</key>
         <string>YOUR_CLUSTER_USERNAME</string>
 
-        <!-- Recommended: pin the fairshare row to the right account -->
-        <key>SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT</key>
-        <string>YOUR_GPU_ACCOUNT</string>
+        <!-- Prefer automation-node aliases for unattended use -->
+        <key>SLURM_STATUS_BAR_DISABLE_PASSCODE_FALLBACK</key>
+        <string>1</string>
+        <key>SLURM_STATUS_BAR_DISABLE_FAIRSHARE</key>
+        <string>1</string>
 
-        <!-- Optional: use per-cluster overrides instead of the global account above -->
+        <key>SLURM_STATUS_BAR_SQUEUE_ALIAS_FIR</key>
+        <string>robot-fir-slurm</string>
+        <key>SLURM_STATUS_BAR_SQUEUE_ALIAS_ROR</key>
+        <string>robot-ror-slurm</string>
+        <key>SLURM_STATUS_BAR_SQUEUE_ALIAS_NIBI</key>
+        <string>robot-nibi-slurm</string>
+        <key>SLURM_STATUS_BAR_SQUEUE_ALIAS_TRIL</key>
+        <string>robot-tril-slurm</string>
+
+        <!-- Fairshare aliases can be added later if your automation-node setup gets an approved sshare wrapper -->
         <!--
-        <key>SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT_FIR</key>
-        <string>YOUR_FIR_GPU_ACCOUNT</string>
-        <key>SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT_ROR</key>
-        <string>YOUR_ROR_GPU_ACCOUNT</string>
+        <key>SLURM_STATUS_BAR_FAIRSHARE_ALIAS_FIR</key>
+        <string>robot-fir-fairshare</string>
+        <key>SLURM_STATUS_BAR_FAIRSHARE_ALIAS_ROR</key>
+        <string>robot-ror-fairshare</string>
+        <key>SLURM_STATUS_BAR_FAIRSHARE_ALIAS_NIBI</key>
+        <string>robot-nibi-fairshare</string>
         -->
-
-        <!-- Optional: passcode file for sshpass-based reconnects -->
-        <key>SLURM_STATUS_BAR_SSHPASS_FILE</key>
-        <string>/Users/USER/.claude/hpc_passcode</string>
     </dict>
 
     <!-- Start automatically on login -->

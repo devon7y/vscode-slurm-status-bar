@@ -1,13 +1,40 @@
-# VS Code Slurm Status Bar
+# HPC Usage Dashboard
 
 A VS Code extension that shows Slurm job status in the status bar by reading a local file that is continuously updated by a small monitor script.
 
 The current monitor can:
 
 - merge jobs from multiple clusters into one line
-- show fairshare values before the job list
+- show GPU fairshare values before the job list
+- append fairshare history rows to `~/.slurm_fairshare_history.csv`
 - count down running jobs and count up pending jobs locally between refreshes
 - survive transient SSH issues better by reusing existing SSH ControlMaster sessions
+- use different SSH aliases for job polling and fairshare polling when automation-node keys differ by command scope
+
+The VS Code hover now also shows:
+
+- a cleaner per-job summary
+- the latest fairshare sample timestamp
+- compact CPU and GPU fairshare trends based on `~/.slurm_fairshare_history.csv`
+- a link to open a full fairshare graph panel
+- a link to open the fairshare history CSV directly
+
+The graph panel now supports:
+
+- selectable date ranges with 24H, 7D, 30D, 90D, 1Y, and All presets
+- custom start and end datetime filters
+- CPU and GPU series on the same chart, with one checkbox for CPU and one for GPU
+- one selectable overlay metric on a separate right-side y-axis, including job-load and node-availability metrics
+- aggregation modes for raw, 15m, 1h, and 6h views
+- per-HPC isolate mode
+- a square chart with a zoomed y-axis so shallow slopes are easier to see
+- hover inspection for exact values at the nearest recorded sample
+- drag-selection on the chart to measure net fairshare change over a chosen time window
+- selection-aware tooltips that show the end-of-selection value and net change together
+- bottom-of-page job statistics cards, including totals and per-cluster snapshots
+- event markers for job submits, starts, ends, and large queue changes
+- a job event table and lag/correlation cards for relating fairshare to job load and GPU node availability
+- opening in the active editor group when launched from the status bar
 
 ## What You Install
 
@@ -16,7 +43,22 @@ This repo has two parts:
 1. The VS Code extension.
 2. The monitor script that writes `~/.slurm_status_bar.txt`.
 
-The extension does not talk to Slurm directly. It only reads `~/.slurm_status_bar.txt` every second. The monitor script is the part that runs `ssh`, `squeue`, and `sshare`.
+The extension does not talk to Slurm directly. It only reads `~/.slurm_status_bar.txt` every second. The monitor script is the part that runs `ssh`, `squeue`, and optionally `sshare`.
+
+The monitor also appends a CSV history file at `~/.slurm_fairshare_history.csv` with columns:
+
+```text
+timestamp,fir_cpu,fir_gpu,ror_cpu,ror_gpu,nibi_cpu,nibi_gpu,tril_cpu,tril_gpu
+```
+
+Each refresh cycle writes one row. If a cluster's fairshare is disabled or unavailable for that cycle, its cell is left blank.
+
+The monitor also appends a job summary CSV at `~/.slurm_job_history.csv` with one row per refresh cycle. It records job counts, running vs pending totals, remaining and time-limit hours, and estimated CPU/GPU-hours overall plus per cluster, so you can compare job load against fairshare changes later.
+
+The monitor also appends:
+
+- `~/.slurm_job_snapshot_history.csv` with one row per active job at each refresh, used for event markers and the per-job event log
+- `~/.slurm_node_history.csv` with GPU-node availability snapshots such as schedulable, down, and drain counts per cluster
 
 ## Requirements
 
@@ -25,13 +67,14 @@ You need:
 - VS Code 1.60.0 or newer
 - `ssh`
 - `python3` 3.8 or newer
-- access to one or more Slurm clusters where `squeue` and `sshare` work for your account
+- access to one or more Slurm clusters where `squeue` works for your account
 
 Recommended:
 
 - SSH aliases in `~/.ssh/config`
 - SSH ControlMaster enabled for faster polling
 - key-based SSH login
+- robot-node aliases with constrained SSH keys if you want unattended access without a passcode refresh
 
 Optional:
 
@@ -40,7 +83,7 @@ Optional:
 
 ## Quick Start
 
-If you already have working SSH aliases such as `fir` and `ror`, this is the shortest path:
+If you already have working SSH aliases such as `fir`, `ror`, and `nibi`, this is the shortest path:
 
 ```bash
 git clone https://github.com/devon7y/vscode-slurm-status-bar.git
@@ -50,7 +93,7 @@ chmod +x scripts/slurm_monitor.sh
 export SLURM_STATUS_BAR_REMOTE_USER=YOUR_CLUSTER_USERNAME
 export SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT=YOUR_GPU_ACCOUNT
 
-./scripts/slurm_monitor.sh fir ror
+./scripts/slurm_monitor.sh fir ror nibi
 ```
 
 Then open another terminal and confirm the status file is being updated:
@@ -62,7 +105,7 @@ cat ~/.slurm_status_bar.txt
 You should see output like:
 
 ```text
-Fir: 0.372 | Ror: 0.064 | my_job (R) 1:23:45 | other_job (PD) 2:17
+Fir: 0.372 | Ror: 0.064 | Nibi: 0.774 | my_job (R) 1:23:45 | other_job (PD) 2:17
 ```
 
 After that, set the monitor to auto-start on login and install the VS Code extension from a `.vsix`.
@@ -90,7 +133,7 @@ That creates a `.vsix` you can install locally.
 
 ## 2. Configure SSH Access
 
-The monitor works best if you can run `ssh <alias> "squeue ..."` without interactive prompts.
+The monitor works best if you can run `ssh <alias> "squeue ..."` without interactive prompts. In automation-node mode, you can use one alias for `squeue` and a different alias for `sshare`.
 
 Example `~/.ssh/config`:
 
@@ -108,12 +151,19 @@ Host ror
   ControlMaster auto
   ControlPersist 8h
   ControlPath ~/.ssh/cm-%C
+
+Host nibi
+  HostName nibi.alliancecan.ca
+  User YOUR_CLUSTER_USERNAME
+  ControlMaster auto
+  ControlPersist 8h
+  ControlPath ~/.ssh/cm-%C
 ```
 
 Notes:
 
-- You can use any alias names, not just `fir` and `ror`.
-- If the alias is not `fir` or `ror`, the status line uses the alias text directly.
+- You can use any alias names, not just `fir`, `ror`, `nibi`, and `tril`.
+- If the alias is not one of the built-in labels above, the status line uses the alias text directly.
 - If your macOS or Linux username is different from your cluster username, set `SLURM_STATUS_BAR_REMOTE_USER`.
 
 Before using the monitor, test SSH manually:
@@ -125,6 +175,57 @@ ssh fir "sshare -u YOUR_CLUSTER_USERNAME -l -P"
 
 Repeat that for each cluster alias you plan to monitor.
 
+Example automation-node aliases:
+
+```sshconfig
+Host robot-fir-slurm
+  HostName robot.fir.alliancecan.ca
+  User YOUR_CLUSTER_USERNAME
+  IdentityFile ~/.ssh/id_ed25519_robot_slurm
+  IdentitiesOnly yes
+  BatchMode no
+  RequestTTY no
+  AddressFamily inet
+  ControlMaster auto
+  ControlPersist 12h
+  ControlPath ~/.ssh/cm-robot-slurm-%C
+
+Host robot-fir-fairshare
+  HostName robot.fir.alliancecan.ca
+  User YOUR_CLUSTER_USERNAME
+  IdentityFile ~/.ssh/id_ed25519_robot_fairshare
+  IdentitiesOnly yes
+  BatchMode no
+  RequestTTY no
+  AddressFamily inet
+  ControlMaster auto
+  ControlPersist 12h
+  ControlPath ~/.ssh/cm-robot-fairshare-%C
+
+Host robot-tril-slurm
+  HostName robot2.scinet.utoronto.ca
+  User YOUR_CLUSTER_USERNAME
+  IdentityFile ~/.ssh/id_ed25519_robot_slurm
+  IdentitiesOnly yes
+  BatchMode no
+  RequestTTY no
+  AddressFamily inet
+  ControlMaster auto
+  ControlPersist 12h
+  ControlPath ~/.ssh/cm-robot-slurm-%C
+```
+
+Then test directly:
+
+```bash
+ssh robot-fir-slurm "squeue -u YOUR_CLUSTER_USERNAME --noheader"
+ssh robot-fir-fairshare "sshare -u YOUR_CLUSTER_USERNAME -l -P"
+```
+
+If your automation-node setup does not support `sshare` yet, you can still run the monitor by disabling fairshare display.
+
+On the current Alliance robot-node setup for this repo, `BatchMode no` is required. The SSH negotiation completes with a zero-prompt `keyboard-interactive` step after the key is accepted, and `BatchMode yes` blocks that path even though no human input is needed.
+
 ## 3. Choose the Right Environment Variables
 
 The monitor uses environment variables so you do not have to edit the script for normal setup.
@@ -134,6 +235,12 @@ The monitor uses environment variables so you do not have to edit the script for
 | `SLURM_STATUS_BAR_REMOTE_USER` | Usually | Cluster username when it differs from your local username |
 | `SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT` | Recommended | Account row to read from `sshare` for fairshare display |
 | `SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT_<REMOTE>` | Optional | Per-cluster fairshare account override, for example `SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT_FIR` |
+| `SLURM_STATUS_BAR_SSH_ALIAS_<REMOTE>` | Optional | Override the SSH alias for both job and fairshare queries for one logical remote |
+| `SLURM_STATUS_BAR_SQUEUE_ALIAS_<REMOTE>` | Optional | Override only the alias used for `squeue` on one logical remote |
+| `SLURM_STATUS_BAR_FAIRSHARE_ALIAS_<REMOTE>` | Optional | Override only the alias used for `sshare` on one logical remote |
+| `SLURM_STATUS_BAR_DISABLE_FAIRSHARE` | Optional | Disable fairshare lookups globally and hide fairshare entries from the status line |
+| `SLURM_STATUS_BAR_DISABLE_FAIRSHARE_<REMOTE>` | Optional | Disable fairshare lookups only for one logical remote |
+| `SLURM_STATUS_BAR_DISABLE_PASSCODE_FALLBACK` | Optional | Skip `sshpass` fallback and let key-based aliases connect directly |
 | `SLURM_STATUS_BAR_SSHPASS_FILE` | Optional | Passcode file used by `sshpass` if no ControlMaster session is active |
 
 Fairshare selection behavior:
@@ -144,6 +251,13 @@ Fairshare selection behavior:
 - If multiple rows are plausible, the monitor logs a warning to stderr and picks one. In that case, set the account explicitly.
 
 If fairshare lookup fails, the display shows `?` for that cluster and the job list still updates.
+
+Alias selection behavior:
+
+- If `SLURM_STATUS_BAR_SQUEUE_ALIAS_<REMOTE>` is set, that alias is used for `squeue`.
+- If `SLURM_STATUS_BAR_FAIRSHARE_ALIAS_<REMOTE>` is set, that alias is used for `sshare`.
+- Otherwise, if `SLURM_STATUS_BAR_SSH_ALIAS_<REMOTE>` is set, that alias is used for both.
+- Otherwise, the logical remote name itself is used as the SSH alias.
 
 ## 4. Run the Monitor Manually First
 
@@ -163,7 +277,37 @@ export SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT=YOUR_GPU_ACCOUNT
 export SLURM_STATUS_BAR_REMOTE_USER=YOUR_CLUSTER_USERNAME
 export SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT_FIR=YOUR_FIR_GPU_ACCOUNT
 export SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT_ROR=YOUR_ROR_GPU_ACCOUNT
-./scripts/slurm_monitor.sh fir ror
+export SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT_NIBI=YOUR_NIBI_GPU_ACCOUNT
+./scripts/slurm_monitor.sh fir ror nibi tril
+```
+
+### Automation-node mode
+
+```bash
+export SLURM_STATUS_BAR_REMOTE_USER=YOUR_CLUSTER_USERNAME
+export SLURM_STATUS_BAR_DISABLE_PASSCODE_FALLBACK=1
+export SLURM_STATUS_BAR_SQUEUE_ALIAS_FIR=robot-fir-slurm
+export SLURM_STATUS_BAR_FAIRSHARE_ALIAS_FIR=robot-fir-fairshare
+export SLURM_STATUS_BAR_SQUEUE_ALIAS_ROR=robot-ror-slurm
+export SLURM_STATUS_BAR_FAIRSHARE_ALIAS_ROR=robot-ror-fairshare
+export SLURM_STATUS_BAR_SQUEUE_ALIAS_NIBI=robot-nibi-slurm
+export SLURM_STATUS_BAR_FAIRSHARE_ALIAS_NIBI=robot-nibi-fairshare
+./scripts/slurm_monitor.sh fir ror nibi
+```
+
+### Automation-node mode without fairshare
+
+If your robot-node setup allows `squeue` but not `sshare` yet:
+
+```bash
+export SLURM_STATUS_BAR_REMOTE_USER=YOUR_CLUSTER_USERNAME
+export SLURM_STATUS_BAR_DISABLE_PASSCODE_FALLBACK=1
+export SLURM_STATUS_BAR_DISABLE_FAIRSHARE=1
+export SLURM_STATUS_BAR_SQUEUE_ALIAS_FIR=robot-fir-slurm
+export SLURM_STATUS_BAR_SQUEUE_ALIAS_ROR=robot-ror-slurm
+export SLURM_STATUS_BAR_SQUEUE_ALIAS_NIBI=robot-nibi-slurm
+export SLURM_STATUS_BAR_SQUEUE_ALIAS_TRIL=robot-tril-slurm
+./scripts/slurm_monitor.sh fir ror nibi tril
 ```
 
 ### Passcode-based fallback
@@ -175,6 +319,8 @@ export SLURM_STATUS_BAR_SSHPASS_FILE="$HOME/.claude/hpc_passcode"
 ```
 
 The monitor first tries `ssh -O check <remote>`. If that existing shared SSH session is not available, it can fall back to `sshpass` with the configured passcode file.
+
+If you use robot-node aliases with key-based auth, set `SLURM_STATUS_BAR_DISABLE_PASSCODE_FALLBACK=1` and you do not need `sshpass`.
 
 ### Verify the result
 
@@ -251,9 +397,13 @@ After=network.target
 [Service]
 Type=simple
 Environment=SLURM_STATUS_BAR_REMOTE_USER=YOUR_CLUSTER_USERNAME
-Environment=SLURM_STATUS_BAR_FAIRSHARE_ACCOUNT=YOUR_GPU_ACCOUNT
-Environment=SLURM_STATUS_BAR_SSHPASS_FILE=%h/.claude/hpc_passcode
-ExecStart=/path/to/vscode-slurm-status-bar/scripts/slurm_monitor.sh fir ror
+Environment=SLURM_STATUS_BAR_DISABLE_PASSCODE_FALLBACK=1
+Environment=SLURM_STATUS_BAR_DISABLE_FAIRSHARE=1
+Environment=SLURM_STATUS_BAR_SQUEUE_ALIAS_FIR=robot-fir-slurm
+Environment=SLURM_STATUS_BAR_SQUEUE_ALIAS_ROR=robot-ror-slurm
+Environment=SLURM_STATUS_BAR_SQUEUE_ALIAS_NIBI=robot-nibi-slurm
+Environment=SLURM_STATUS_BAR_SQUEUE_ALIAS_TRIL=robot-tril-slurm
+ExecStart=/path/to/vscode-slurm-status-bar/scripts/slurm_monitor.sh fir ror nibi tril
 Restart=always
 RestartSec=10
 
@@ -275,7 +425,7 @@ systemctl --user status slurm-status.service
 Example:
 
 ```text
-Fir: 0.372 | Ror: 0.064 | train_model (R) 1:23:45 | embed_docs (PD) 2:17
+Fir: 0.372 | Ror: 0.064 | Nibi: 0.774 | train_model (R) 1:23:45 | embed_docs (PD) 2:17
 ```
 
 Interpretation:
@@ -329,7 +479,7 @@ ps aux | grep slurm_monitor
 If the file does not exist, run the monitor manually:
 
 ```bash
-./scripts/slurm_monitor.sh fir ror
+./scripts/slurm_monitor.sh fir ror nibi
 ```
 
 ### The file exists but fairshare shows `?`
@@ -339,6 +489,7 @@ This usually means one of these:
 - `sshare` failed on that cluster
 - the wrong remote username is being used
 - the monitor could not find the right fairshare account row
+- fairshare is intentionally disabled for that cluster
 
 Test directly:
 
@@ -372,6 +523,8 @@ The monitor is designed to work best with existing SSH ControlMaster sessions. I
 3. set `SLURM_STATUS_BAR_SSHPASS_FILE`
 
 You can also avoid this entirely by setting up key-based SSH or starting the shared SSH session yourself before the monitor runs.
+
+For robot-node aliases, prefer key-based auth with `BatchMode no` and set `SLURM_STATUS_BAR_DISABLE_PASSCODE_FALLBACK=1`.
 
 ### LaunchAgent starts but immediately exits
 

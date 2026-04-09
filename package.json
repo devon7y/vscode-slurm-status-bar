@@ -1,7 +1,7 @@
 {
   "name": "slurm-status-bar",
-  "displayName": "Slurm Status Bar",
-  "description": "Displays Slurm job status from ~/.slurm_status_bar.txt in the VS Code status bar with real-time updates",
+  "displayName": "HPC Usage Dashboard",
+  "description": "Displays HPC job and fairshare history from local monitor files in the VS Code status bar and dashboard",
   "version": "0.4.0",
   "publisher": "devon7y",
   "repository": {
@@ -21,7 +21,22 @@
     "*"
   ],
   "main": "./out/extension.js",
-  "contributes": {},
+  "contributes": {
+    "commands": [
+      {
+        "command": "slurmStatusBar.showFullStatus",
+        "title": "HPC Usage Dashboard: Show Full Status"
+      },
+      {
+        "command": "slurmStatusBar.showFairshareGraph",
+        "title": "HPC Usage Dashboard: Open Dashboard"
+      },
+      {
+        "command": "slurmStatusBar.openFairshareHistory",
+        "title": "HPC Usage Dashboard: Open Fairshare History CSV"
+      }
+    ]
+  },
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
