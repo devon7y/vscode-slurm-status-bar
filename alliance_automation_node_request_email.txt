@@ -1,0 +1,66 @@
+Subject: Request for automation node access on Fir, Rorqual, and Nibi for non-interactive Slurm monitoring and job management
+
+Hello Alliance technical support,
+
+I would like to request access to the automation nodes for Fir, Rorqual, and Nibi for my account `devon7y` under allocation `def-jcaplan`.
+
+I have two related non-interactive local workflows that need unattended access without prompting for MFA passcodes:
+
+1. Local Slurm automation for submitting jobs, polling status, canceling jobs, and synchronizing small project files.
+2. A local VS Code extension ("Slurm Status Bar") that displays my Slurm job statuses in the VS Code status bar.
+
+The VS Code extension itself does not connect to the clusters directly. It only reads a local file (`~/.slurm_status_bar.txt`). A small local Python 3 monitor script updates that file by querying the clusters over SSH. The monitor runs on my workstation and refreshes remote state once every 60 seconds per configured cluster.
+
+The automation is strictly non-interactive. I do not need PTY access, agent forwarding, X11 forwarding, port forwarding, or interactive shells on the automation nodes. I only need to run direct commands for Slurm monitoring/control and small file transfers.
+
+The commands I need are:
+
+- Slurm monitoring for the VS Code status bar:
+  - `squeue -u devon7y --noheader -o '%i|%j|%t|%L'`
+  - `sshare -u devon7y -l -P`
+
+- Slurm job control for my local automation workflow:
+  - `sbatch <job_script>`
+  - `squeue ...`
+  - `scancel <job_id>`
+  - `scontrol ...`
+  - `sq ...`
+
+- File transfer for small project/code/config/result synchronization:
+  - `rsync ...`
+  - optionally `scp` / `sftp`
+
+For larger data movement between systems or clusters, I use Globus separately. Globus is not the reason for this automation-node request; the request is specifically for SSH-based Slurm monitoring/control and small SSH-based transfers.
+
+The tools/libraries involved on my side are:
+
+- OpenSSH client
+- `rsync`
+- a local Python 3 monitor script
+- a local VS Code extension that reads a text file produced by the monitor
+
+I understand that automation-node access requires constrained SSH keys uploaded through CCDB, including `restrict`, `from=`, and `command=` constraints, and that the recommended model is one key per use. I plan to follow that model and use separate keys/aliases for different purposes, for example:
+
+- one key for Slurm control/monitoring
+- one key for file transfer
+- if needed, a separate key or wrapper for read-only fairshare lookup
+
+I will also restrict the keys to my workstation's public IP/subnet via `from=` and can provide the exact public IP mask as needed.
+
+One important question is `sshare`. My VS Code status monitor uses `sshare -u devon7y -l -P` to display fairshare values alongside job statuses. I noticed that the published `slurm_commands.sh` wrapper documents `squeue`, `sbatch`, `scancel`, `scontrol`, and `sq`, but not `sshare`. Could you please advise on the recommended way to support read-only `sshare` access on the automation nodes? If the right solution is to use a custom wrapper script for `command=`, I am happy to do that.
+
+To summarize, the intended use is:
+
+- unattended, non-interactive SSH access from my local workstation
+- read-only Slurm status polling every 60 seconds for a local VS Code status-bar display
+- on-demand job submission and job management
+- small file synchronization with `rsync`
+- no interactive shell use on the automation nodes
+
+Could you please let me know the process for enabling automation-node access for Fir, Rorqual, and Nibi, and whether a custom wrapper is the right path for supporting `sshare` in addition to the standard Slurm commands?
+
+Thank you,
+
+Devon Y.
+Account: devon7y
+Allocation: def-jcaplan

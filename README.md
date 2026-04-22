@@ -203,7 +203,7 @@ Host robot-fir-fairshare
   ControlPath ~/.ssh/cm-robot-fairshare-%C
 
 Host robot-tril-slurm
-  HostName robot2.scinet.utoronto.ca
+  HostName trig-robot1.scinet.utoronto.ca
   User YOUR_CLUSTER_USERNAME
   IdentityFile ~/.ssh/id_ed25519_robot_slurm
   IdentitiesOnly yes
@@ -292,7 +292,9 @@ export SLURM_STATUS_BAR_SQUEUE_ALIAS_ROR=robot-ror-slurm
 export SLURM_STATUS_BAR_FAIRSHARE_ALIAS_ROR=robot-ror-fairshare
 export SLURM_STATUS_BAR_SQUEUE_ALIAS_NIBI=robot-nibi-slurm
 export SLURM_STATUS_BAR_FAIRSHARE_ALIAS_NIBI=robot-nibi-fairshare
-./scripts/slurm_monitor.sh fir ror nibi
+export SLURM_STATUS_BAR_SQUEUE_ALIAS_TRIL=robot-tril-slurm
+export SLURM_STATUS_BAR_FAIRSHARE_ALIAS_TRIL=robot-tril-fairshare
+./scripts/slurm_monitor.sh fir ror nibi tril
 ```
 
 ### Automation-node mode without fairshare

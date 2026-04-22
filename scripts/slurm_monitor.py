@@ -385,6 +385,12 @@ def select_fairshare_row(
     resource: str,
     user: str,
 ) -> str:
+    preferred_account = (
+        os.environ.get(env_key_for_remote(FAIRSHARE_ACCOUNT_ENV, remote))
+        or os.environ.get(FAIRSHARE_ACCOUNT_ENV)
+        or ""
+    ).strip()
+    preferred_account_lower = preferred_account.lower()
     preferred_base = preferred_account_base(remote)
     preferred_name = (
         f"{preferred_base}_{resource}".lower() if preferred_base else ""
@@ -394,6 +400,14 @@ def select_fairshare_row(
         for account, fairshare in matching_rows:
             if account.lower() == preferred_name:
                 return format_fairshare(fairshare)
+        if resource == "gpu" and preferred_base:
+            for account, fairshare in matching_rows:
+                if account.lower() == preferred_base.lower():
+                    return format_fairshare(fairshare)
+        if resource == "gpu" and preferred_account_lower:
+            for account, fairshare in matching_rows:
+                if account.lower() == preferred_account_lower:
+                    return format_fairshare(fairshare)
         raise RuntimeError(
             f"fairshare row for account {preferred_name} not found on "
             f"{ssh_alias_for_remote(remote, 'fairshare')}"
@@ -405,6 +419,23 @@ def select_fairshare_row(
         if account.lower().endswith(f"_{resource}")
     ]
     if not resource_rows:
+        if resource == "gpu":
+            generic_rows = [
+                (account, fairshare)
+                for account, fairshare in matching_rows
+                if not account.lower().endswith("_cpu")
+                and not account.lower().endswith("_gpu")
+            ]
+            if len(generic_rows) == 1:
+                selected_account, selected_fairshare = generic_rows[0]
+                log(
+                    "Warning: using unsuffixed fairshare row "
+                    f"{selected_account} for {remote} {resource} fairshare. "
+                    f"Set {FAIRSHARE_ACCOUNT_ENV} or "
+                    f"{env_key_for_remote(FAIRSHARE_ACCOUNT_ENV, remote)} "
+                    "to override."
+                )
+                return format_fairshare(selected_fairshare)
         raise RuntimeError(
             f"no {resource} fairshare rows found for user {user} on "
             f"{ssh_alias_for_remote(remote, 'fairshare')}"
@@ -466,10 +497,16 @@ def fetch_fairshare(remote: str, user: str) -> dict[str, str]:
             f"no fairshare rows found for user {user} on {ssh_alias}"
         )
 
-    return {
-        resource: select_fairshare_row(matching_rows, remote, resource, user)
-        for resource in FAIRSHARE_RESOURCES
-    }
+    selected: dict[str, str] = {}
+    for resource in FAIRSHARE_RESOURCES:
+        try:
+            selected[resource] = select_fairshare_row(
+                matching_rows, remote, resource, user
+            )
+        except RuntimeError as exc:
+            log(f"Warning: failed to fetch fairshare for {remote}: {exc}")
+            selected[resource] = "n/a"
+    return selected
 
 
 def fetch_node_availability(remote: str) -> dict[str, str]:
