@@ -615,8 +615,8 @@ function buildFairshareGraphHtml(
     jobSnapshots: JobSnapshotRow[],
     nodeHistory: JobHistoryData,
 ): string {
-    const chartWidth = 720;
-    const chartHeight = 720;
+    const chartWidth = 1120;
+    const chartHeight = 620;
     const historyPayload = JSON.stringify(historyRows.map((row) => ({
         timestamp: row.timestamp,
         values: Object.fromEntries(
@@ -758,13 +758,12 @@ function buildFairshareGraphHtml(
         }
         .chart-shell {
             position: relative;
-            width: min(78vmin, ${chartWidth}px);
-            aspect-ratio: 1 / 1;
+            width: 100%;
             margin: 0 auto;
         }
         .chart-shell svg {
             width: 100%;
-            height: 100%;
+            height: auto;
             display: block;
         }
         .axis-label {
@@ -1025,9 +1024,9 @@ function buildFairshareGraphHtml(
     <p class="subtle">Source: ${escapeHtml(FAIRSHARE_HISTORY_PATH)}</p>
     <div class="card">
         <div class="preset-row">
-            <button class="preset-button active" data-range="all">All</button>
+            <button class="preset-button" data-range="all">All</button>
             <button class="preset-button" data-range="1d">24H</button>
-            <button class="preset-button" data-range="7d">7D</button>
+            <button class="preset-button active" data-range="7d">7D</button>
             <button class="preset-button" data-range="30d">30D</button>
             <button class="preset-button" data-range="90d">90D</button>
             <button class="preset-button" data-range="1y">1Y</button>
@@ -1699,6 +1698,96 @@ function buildFairshareGraphHtml(
                     return true;
                 }
                 return event.remote === cluster;
+            });
+        }
+
+        function runningIntervalsForRange(startDate, endDate) {
+            const cluster = selectedCluster();
+            const snapshotsByTimestamp = new Map();
+            for (const snapshot of allJobSnapshots) {
+                if (snapshot.date < startDate || snapshot.date > endDate) {
+                    continue;
+                }
+                if (cluster !== 'all' && snapshot.remote !== cluster) {
+                    continue;
+                }
+                const key = snapshot.date.getTime();
+                let bucket = snapshotsByTimestamp.get(key);
+                if (!bucket) {
+                    bucket = [];
+                    snapshotsByTimestamp.set(key, bucket);
+                }
+                bucket.push(snapshot);
+            }
+
+            const timeline = Array.from(snapshotsByTimestamp.keys()).sort((a, b) => a - b);
+            const activeByJob = new Map();
+            const intervals = [];
+
+            for (const timestamp of timeline) {
+                const snapshotDate = new Date(timestamp);
+                const runningRows = (snapshotsByTimestamp.get(timestamp) || []).filter((row) => row.state === 'R');
+                const runningKeys = new Set();
+
+                for (const row of runningRows) {
+                    const jobKey = row.remote + ':' + row.jobId;
+                    runningKeys.add(jobKey);
+                    if (!activeByJob.has(jobKey)) {
+                        activeByJob.set(jobKey, {
+                            remote: row.remote,
+                            jobId: row.jobId,
+                            name: row.name,
+                            start: snapshotDate,
+                        });
+                    }
+                }
+
+                for (const [jobKey, span] of activeByJob.entries()) {
+                    if (runningKeys.has(jobKey)) {
+                        continue;
+                    }
+                    intervals.push({ ...span, end: snapshotDate });
+                    activeByJob.delete(jobKey);
+                }
+            }
+
+            for (const span of activeByJob.values()) {
+                intervals.push({ ...span, end: endDate });
+            }
+
+            return intervals
+                .map((span) => ({
+                    ...span,
+                    start: span.start < startDate ? startDate : span.start,
+                    end: span.end > endDate ? endDate : span.end,
+                }))
+                .filter((span) => span.end.getTime() > span.start.getTime());
+        }
+
+        function layoutIntervalsIntoLanes(intervals) {
+            const sorted = [...intervals].sort((left, right) => {
+                const delta = left.start.getTime() - right.start.getTime();
+                if (delta !== 0) {
+                    return delta;
+                }
+                return left.end.getTime() - right.end.getTime();
+            });
+
+            const laneEndTimes = [];
+            return sorted.map((interval) => {
+                const startMs = interval.start.getTime();
+                const endMs = interval.end.getTime();
+                let laneIndex = laneEndTimes.findIndex((laneEndMs) => laneEndMs <= startMs);
+                if (laneIndex === -1) {
+                    laneIndex = laneEndTimes.length;
+                    laneEndTimes.push(endMs);
+                } else {
+                    laneEndTimes[laneIndex] = endMs;
+                }
+                return {
+                    ...interval,
+                    laneIndex,
+                };
             });
         }
 
@@ -2400,6 +2489,15 @@ function buildFairshareGraphHtml(
                 }
                 return CHART.padding.left + (index / (rows.length - 1)) * plotWidth;
             };
+            const timeSpanMs = Math.max(1, rows[rows.length - 1].date.getTime() - rows[0].date.getTime());
+            const xForDate = (date) => {
+                if (rows.length <= 1) {
+                    return CHART.padding.left + plotWidth / 2;
+                }
+                const normalized = (date.getTime() - rows[0].date.getTime()) / timeSpanMs;
+                const clamped = Math.max(0, Math.min(1, normalized));
+                return CHART.padding.left + clamped * plotWidth;
+            };
             currentXForIndex = xForIndex;
 
             const yForValue = (value) => {
@@ -2484,7 +2582,6 @@ function buildFairshareGraphHtml(
                 }).join('')
                 : '';
             const markerEvents = filteredEventsForRange(rows[0].date, rows[rows.length - 1].date);
-            const markerStackByIndex = new Map();
             const positionedEvents = markerEvents.map((event) => {
                 let bestIndex = 0;
                 let bestDelta = Number.POSITIVE_INFINITY;
@@ -2495,42 +2592,33 @@ function buildFairshareGraphHtml(
                         bestIndex = index;
                     }
                 }
-                const stack = markerStackByIndex.get(bestIndex) || 0;
-                markerStackByIndex.set(bestIndex, stack + 1);
                 return {
                     ...event,
                     rowIndex: bestIndex,
-                    stack,
                 };
             });
-            const eventMarkerSvg = positionedEvents.map((event) => {
-                const color = eventAccentColor(event);
-                const x = xForIndex(event.rowIndex);
-                const y = CHART.padding.top + 10 + Math.min(event.stack, 2) * 10;
-                if (event.type === 'submit') {
-                    return \`<circle cx="\${x}" cy="\${y}" r="4.5" fill="\${color}" opacity="0.95" stroke="var(--vscode-editor-background)" stroke-width="1.2"></circle>\`;
-                }
-                if (event.type === 'start') {
-                    return \`<polygon points="\${x},\${y - 5} \${x - 5},\${y + 4} \${x + 5},\${y + 4}" fill="\${color}" opacity="0.95" stroke="var(--vscode-editor-background)" stroke-width="1.2"></polygon>\`;
-                }
-                if (event.type === 'end') {
-                    return \`<rect x="\${x - 4}" y="\${y - 4}" width="8" height="8" fill="none" stroke="\${color}" stroke-width="2.2" opacity="0.95"></rect>\`;
-                }
-                return \`<polygon points="\${x},\${y - 5} \${x - 5},\${y} \${x},\${y + 5} \${x + 5},\${y}" fill="none" stroke="\${color}" stroke-width="2" opacity="0.95"></polygon>\`;
+            const runningIntervals = runningIntervalsForRange(rows[0].date, rows[rows.length - 1].date);
+            const laidOutIntervals = layoutIntervalsIntoLanes(runningIntervals);
+            const laneCount = laidOutIntervals.reduce((maxLane, span) => Math.max(maxLane, span.laneIndex + 1), 0);
+            const laneGap = 2;
+            const laneHeight = laneCount > 0
+                ? Math.max(2, Math.min(14, Math.floor(plotHeight / laneCount)))
+                : 0;
+            const runningIntervalSvg = laidOutIntervals.map((span) => {
+                const color = SERIES_COLORS[span.remote + '_gpu'] || '#bfc7d5';
+                const left = xForDate(span.start);
+                const right = xForDate(span.end);
+                const width = Math.max(1, right - left);
+                const y = CHART.padding.top + span.laneIndex * laneHeight;
+                const height = Math.max(1, laneHeight - laneGap);
+                return '<rect x="' + left
+                    + '" y="' + y
+                    + '" width="' + width
+                    + '" height="' + height
+                    + '" fill="' + color
+                    + '" opacity="0.25"></rect>';
             }).join('');
-            const eventGuideSvg = positionedEvents
-                .filter((event) => event.type === 'start' || event.type === 'end')
-                .map((event) => {
-                    const color = eventAccentColor(event);
-                    const x = xForIndex(event.rowIndex);
-                    const dasharray = event.type === 'end' ? '4 4' : '';
-                    const dashAttribute = dasharray ? \` stroke-dasharray="\${dasharray}"\` : '';
-                    return \`<line x1="\${x}" y1="\${CHART.padding.top}" x2="\${x}" y2="\${CHART.padding.top + plotHeight}" stroke="\${color}" stroke-width="2.4" opacity="1"\${dashAttribute}></line>\`;
-                })
-                .join('');
-
             svg.innerHTML = \`
-                \${eventGuideSvg}
                 \${verticalGridLines.map((x) => \`<line class="grid-line" x1="\${x}" y1="\${CHART.padding.top}" x2="\${x}" y2="\${CHART.padding.top + plotHeight}"></line>\`).join('')}
                 \${grid.map((line) => \`
                     <line class="grid-line" x1="\${CHART.padding.left}" y1="\${line.y}" x2="\${CHART.width - CHART.padding.right}" y2="\${line.y}"></line>
@@ -2539,10 +2627,10 @@ function buildFairshareGraphHtml(
                 <line class="grid-line" x1="\${CHART.padding.left}" y1="\${CHART.padding.top}" x2="\${CHART.padding.left}" y2="\${CHART.padding.top + plotHeight}"></line>
                 <line class="grid-line" x1="\${CHART.padding.left}" y1="\${CHART.padding.top + plotHeight}" x2="\${CHART.width - CHART.padding.right}" y2="\${CHART.padding.top + plotHeight}"></line>
                 <line class="grid-line" x1="\${CHART.width - CHART.padding.right}" y1="\${CHART.padding.top}" x2="\${CHART.width - CHART.padding.right}" y2="\${CHART.padding.top + plotHeight}"></line>
+                \${runningIntervalSvg}
                 \${polylines}
                 \${overlayPolyline}
                 \${overlayGrid}
-                \${eventMarkerSvg}
                 <rect id="selectionRect" x="0" y="0" width="0" height="0" fill="var(--vscode-textLink-activeForeground)" opacity="0"></rect>
                 <line id="hoverLine" x1="0" y1="\${CHART.padding.top}" x2="0" y2="\${CHART.padding.top + plotHeight}" stroke="var(--vscode-editorCursor-foreground)" stroke-width="1.2" stroke-dasharray="4 4" opacity="0"></line>
                 <g id="hoverPoints"></g>
@@ -2765,7 +2853,7 @@ function buildFairshareGraphHtml(
 
         initializeJobMetricSelect();
         if (allRows.length > 0) {
-            render();
+            applyPreset('7d');
         } else {
             metrics.innerHTML = '<span>No fairshare history samples are available yet.</span>';
             updateLegend([], visibleSeriesKeys());
