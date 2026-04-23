@@ -36,6 +36,7 @@ export const DASHBOARD_SCRIPT = `
             height: DASHBOARD.chartHeight,
             padding: { top: 28, right: 28, bottom: 72, left: 72 },
         };
+        const MAX_POLYLINE_POINTS = 2000;
         let currentRows = [];
         let currentJobRows = [];
         let currentNodeRows = [];
@@ -50,6 +51,8 @@ export const DASHBOARD_SCRIPT = `
         let currentHoverUpdater = null;
         let currentSelectionHoverUpdater = null;
         let currentHideHover = null;
+        let pendingRenderFrame = null;
+        let pendingDeferredTimer = null;
         const AGGREGATION_BUCKETS = {
             raw: 0,
             '15m': 15 * 60 * 1000,
@@ -60,8 +63,10 @@ export const DASHBOARD_SCRIPT = `
             submit: 'Submit',
             start: 'Start',
             end: 'End',
-            queue_change: 'Queue Δ',
+            queue_change: 'Queue \\u0394',
         };
+        const JOB_METRIC_KEY_SET = new Set(JOB_METRIC_KEYS);
+        const NODE_METRIC_KEY_SET = new Set(NODE_METRIC_KEYS);
 
         const allRows = HISTORY_DATA
             .map((row) => ({
@@ -93,6 +98,111 @@ export const DASHBOARD_SCRIPT = `
         const OVERLAY_METRIC_KEYS = [...JOB_METRIC_KEYS, ...NODE_METRIC_KEYS];
         const OVERLAY_METRIC_LABELS = { ...JOB_METRIC_LABELS, ...NODE_METRIC_LABELS };
         const allEvents = deriveEvents(allJobSnapshots, allJobRows);
+
+        function binarySearchNearest(sortedRows, targetMs) {
+            if (sortedRows.length === 0) {
+                return null;
+            }
+            let lo = 0;
+            let hi = sortedRows.length - 1;
+            while (lo < hi) {
+                const mid = (lo + hi) >>> 1;
+                if (sortedRows[mid].date.getTime() < targetMs) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            let best = lo;
+            if (lo > 0) {
+                const deltaLo = Math.abs(sortedRows[lo].date.getTime() - targetMs);
+                const deltaPrev = Math.abs(sortedRows[lo - 1].date.getTime() - targetMs);
+                if (deltaPrev < deltaLo) {
+                    best = lo - 1;
+                }
+            }
+            const delta = Math.abs(sortedRows[best].date.getTime() - targetMs);
+            return delta <= 120000 ? sortedRows[best] : null;
+        }
+
+        function binarySearchNearestIndex(sortedRows, targetMs) {
+            if (sortedRows.length === 0) {
+                return 0;
+            }
+            let lo = 0;
+            let hi = sortedRows.length - 1;
+            while (lo < hi) {
+                const mid = (lo + hi) >>> 1;
+                if (sortedRows[mid].date.getTime() < targetMs) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            if (lo > 0) {
+                const deltaLo = Math.abs(sortedRows[lo].date.getTime() - targetMs);
+                const deltaPrev = Math.abs(sortedRows[lo - 1].date.getTime() - targetMs);
+                if (deltaPrev < deltaLo) {
+                    return lo - 1;
+                }
+            }
+            return lo;
+        }
+
+        function decimatePoints(points, maxPoints) {
+            if (points.length <= maxPoints) {
+                return points;
+            }
+            const result = [points[0]];
+            const bucketSize = (points.length - 2) / (maxPoints - 2);
+            let prevSelected = points[0];
+            for (let i = 1; i < maxPoints - 1; i++) {
+                const bucketStart = Math.floor((i - 1) * bucketSize) + 1;
+                const bucketEnd = Math.min(Math.floor(i * bucketSize) + 1, points.length - 1);
+                const nextBucketStart = Math.min(Math.floor(i * bucketSize) + 1, points.length - 1);
+                const nextBucketEnd = Math.min(Math.floor((i + 1) * bucketSize) + 1, points.length - 1);
+                let avgX = 0;
+                let avgY = 0;
+                let count = 0;
+                for (let j = nextBucketStart; j <= nextBucketEnd; j++) {
+                    avgX += points[j].rowIndex;
+                    avgY += points[j].value;
+                    count++;
+                }
+                avgX /= count;
+                avgY /= count;
+                let bestArea = -1;
+                let bestIdx = bucketStart;
+                for (let j = bucketStart; j <= bucketEnd; j++) {
+                    const area = Math.abs(
+                        (prevSelected.rowIndex - avgX) * (points[j].value - prevSelected.value)
+                        - (prevSelected.rowIndex - points[j].rowIndex) * (avgY - prevSelected.value)
+                    );
+                    if (area > bestArea) {
+                        bestArea = area;
+                        bestIdx = j;
+                    }
+                }
+                result.push(points[bestIdx]);
+                prevSelected = points[bestIdx];
+            }
+            result.push(points[points.length - 1]);
+            return result;
+        }
+
+        function minMaxValues(values) {
+            if (values.length === 0) {
+                return { min: 0, max: 0 };
+            }
+            let min = values[0];
+            let max = values[0];
+            for (let i = 1; i < values.length; i++) {
+                const v = values[i];
+                if (v < min) { min = v; }
+                if (v > max) { max = v; }
+            }
+            return { min, max };
+        }
 
         function toInputValue(date) {
             const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
@@ -158,47 +268,23 @@ export const DASHBOARD_SCRIPT = `
 
         function findNearestJobRow(date) {
             const sourceRows = currentJobRows.length > 0 ? currentJobRows : allJobRows;
-            if (sourceRows.length === 0) {
-                return null;
-            }
-            let best = null;
-            let bestDelta = Number.POSITIVE_INFINITY;
-            for (const row of sourceRows) {
-                const delta = Math.abs(row.date.getTime() - date.getTime());
-                if (delta < bestDelta) {
-                    best = row;
-                    bestDelta = delta;
-                }
-            }
-            return bestDelta <= 120000 ? best : null;
+            return binarySearchNearest(sourceRows, date.getTime());
         }
 
         function findNearestNodeRow(date) {
             const sourceRows = currentNodeRows.length > 0 ? currentNodeRows : allNodeRows;
-            if (sourceRows.length === 0) {
-                return null;
-            }
-            let best = null;
-            let bestDelta = Number.POSITIVE_INFINITY;
-            for (const row of sourceRows) {
-                const delta = Math.abs(row.date.getTime() - date.getTime());
-                if (delta < bestDelta) {
-                    best = row;
-                    bestDelta = delta;
-                }
-            }
-            return bestDelta <= 120000 ? best : null;
+            return binarySearchNearest(sourceRows, date.getTime());
         }
 
         function overlayMetricValueForRow(fairshareRow, metricKey) {
             if (!metricKey || metricKey === 'none') {
                 return undefined;
             }
-            if (JOB_METRIC_KEYS.includes(metricKey)) {
+            if (JOB_METRIC_KEY_SET.has(metricKey)) {
                 const jobRow = findNearestJobRow(fairshareRow.date);
                 return jobRow ? jobRow.values[metricKey] : undefined;
             }
-            if (NODE_METRIC_KEYS.includes(metricKey)) {
+            if (NODE_METRIC_KEY_SET.has(metricKey)) {
                 const nodeRow = findNearestNodeRow(fairshareRow.date);
                 return nodeRow ? nodeRow.values[metricKey] : undefined;
             }
@@ -206,7 +292,7 @@ export const DASHBOARD_SCRIPT = `
         }
 
         function jobMetricValueForRow(fairshareRow, metricKey) {
-            if (!JOB_METRIC_KEYS.includes(metricKey)) {
+            if (!JOB_METRIC_KEY_SET.has(metricKey)) {
                 return undefined;
             }
             const jobRow = findNearestJobRow(fairshareRow.date);
@@ -237,15 +323,40 @@ export const DASHBOARD_SCRIPT = `
 
         function filterRowsByRange(rows) {
             const { start, end } = rangeBounds();
-            return rows.filter((row) => {
-                if (start && row.date < start) {
-                    return false;
+            if (!start && !end) {
+                return rows;
+            }
+            const startMs = start ? start.getTime() : -Infinity;
+            const endMs = end ? end.getTime() : Infinity;
+            let lo = 0;
+            let hi = rows.length;
+            if (start) {
+                let a = 0;
+                let b = rows.length;
+                while (a < b) {
+                    const mid = (a + b) >>> 1;
+                    if (rows[mid].date.getTime() < startMs) {
+                        a = mid + 1;
+                    } else {
+                        b = mid;
+                    }
                 }
-                if (end && row.date > end) {
-                    return false;
+                lo = a;
+            }
+            if (end) {
+                let a = lo;
+                let b = rows.length;
+                while (a < b) {
+                    const mid = (a + b) >>> 1;
+                    if (rows[mid].date.getTime() <= endMs) {
+                        a = mid + 1;
+                    } else {
+                        b = mid;
+                    }
                 }
-                return true;
-            });
+                hi = a;
+            }
+            return rows.slice(lo, hi);
         }
 
         function bucketStartMs(date, bucketMs) {
@@ -302,7 +413,7 @@ export const DASHBOARD_SCRIPT = `
                 });
         }
 
-        function aggregateJobRows(rows, bucketMs) {
+        function aggregateGenericRows(rows, bucketMs, metricKeys) {
             if (bucketMs <= 0 || rows.length <= 1) {
                 return rows;
             }
@@ -319,7 +430,7 @@ export const DASHBOARD_SCRIPT = `
                     };
                     buckets.set(bucketKey, bucket);
                 }
-                for (const key of JOB_METRIC_KEYS) {
+                for (const key of metricKeys) {
                     const value = row.values[key];
                     if (typeof value !== 'number') {
                         continue;
@@ -334,54 +445,7 @@ export const DASHBOARD_SCRIPT = `
                 .map((bucket) => {
                     const bucketEnd = bucket.bucketKey + bucketMs;
                     const values = {};
-                    for (const key of JOB_METRIC_KEYS) {
-                        if (bucket.counts[key]) {
-                            values[key] = bucket.sums[key] / bucket.counts[key];
-                        }
-                    }
-                    return {
-                        timestamp: new Date(bucketEnd).toISOString(),
-                        date: new Date(bucketEnd),
-                        bucketStart: new Date(bucket.bucketKey),
-                        bucketEnd: new Date(bucketEnd),
-                        values,
-                    };
-                });
-        }
-
-        function aggregateNodeRows(rows, bucketMs) {
-            if (bucketMs <= 0 || rows.length <= 1) {
-                return rows;
-            }
-
-            const buckets = new Map();
-            for (const row of rows) {
-                const bucketKey = bucketStartMs(row.date, bucketMs);
-                let bucket = buckets.get(bucketKey);
-                if (!bucket) {
-                    bucket = {
-                        bucketKey,
-                        sums: {},
-                        counts: {},
-                    };
-                    buckets.set(bucketKey, bucket);
-                }
-                for (const key of NODE_METRIC_KEYS) {
-                    const value = row.values[key];
-                    if (typeof value !== 'number') {
-                        continue;
-                    }
-                    bucket.sums[key] = (bucket.sums[key] || 0) + value;
-                    bucket.counts[key] = (bucket.counts[key] || 0) + 1;
-                }
-            }
-
-            return Array.from(buckets.values())
-                .sort((a, b) => a.bucketKey - b.bucketKey)
-                .map((bucket) => {
-                    const bucketEnd = bucket.bucketKey + bucketMs;
-                    const values = {};
-                    for (const key of NODE_METRIC_KEYS) {
+                    for (const key of metricKeys) {
                         if (bucket.counts[key]) {
                             values[key] = bucket.sums[key] / bucket.counts[key];
                         }
@@ -401,11 +465,11 @@ export const DASHBOARD_SCRIPT = `
         }
 
         function currentRangeJobRows() {
-            return aggregateJobRows(filterRowsByRange(allJobRows), selectedAggregationBucketMs());
+            return aggregateGenericRows(filterRowsByRange(allJobRows), selectedAggregationBucketMs(), JOB_METRIC_KEYS);
         }
 
         function currentRangeNodeRows() {
-            return aggregateNodeRows(filterRowsByRange(allNodeRows), selectedAggregationBucketMs());
+            return aggregateGenericRows(filterRowsByRange(allNodeRows), selectedAggregationBucketMs(), NODE_METRIC_KEYS);
         }
 
         function metricForSeries(seriesKey) {
@@ -423,10 +487,13 @@ export const DASHBOARD_SCRIPT = `
         }
 
         function latestValueForSeries(rows, seriesKey) {
-            const values = rows
-                .map((row) => row.values[seriesKey])
-                .filter((value) => typeof value === 'number');
-            return values.length > 0 ? Number(values[values.length - 1]) : null;
+            for (let i = rows.length - 1; i >= 0; i--) {
+                const value = rows[i].values[seriesKey];
+                if (typeof value === 'number') {
+                    return value;
+                }
+            }
+            return null;
         }
 
         function updateLegend(rows, activeKeys) {
@@ -538,7 +605,7 @@ export const DASHBOARD_SCRIPT = `
                             remainingHours: job.remainingHours,
                             timeLimitHours: job.timeLimitHours,
                             gpuHoursRemaining: job.gpuHoursRemaining,
-                            note: \`State changed \${previous.state} → \${job.state}.\`,
+                            note: \`State changed \${previous.state} \\u2192 \${job.state}.\`,
                         });
                     }
                 }
@@ -610,32 +677,36 @@ export const DASHBOARD_SCRIPT = `
 
         function filteredEventsForRange(startDate, endDate) {
             const cluster = selectedCluster();
-            return allEvents.filter((event) => {
-                if (event.date < startDate || event.date > endDate) {
-                    return false;
-                }
-                if (cluster === 'all') {
-                    return true;
-                }
-                return event.remote === cluster;
-            });
+            const startMs = startDate.getTime();
+            const endMs = endDate.getTime();
+            const result = [];
+            for (const event of allEvents) {
+                const t = event.date.getTime();
+                if (t < startMs) { continue; }
+                if (t > endMs) { break; }
+                if (cluster !== 'all' && event.remote !== cluster) { continue; }
+                result.push(event);
+            }
+            return result;
         }
 
         function runningIntervalsForRange(startDate, endDate) {
             const cluster = selectedCluster();
+            const startMs = startDate.getTime();
+            const endMs = endDate.getTime();
             const snapshotsByTimestamp = new Map();
             for (const snapshot of allJobSnapshots) {
-                if (snapshot.date < startDate || snapshot.date > endDate) {
+                const t = snapshot.date.getTime();
+                if (t < startMs || t > endMs) {
                     continue;
                 }
                 if (cluster !== 'all' && snapshot.remote !== cluster) {
                     continue;
                 }
-                const key = snapshot.date.getTime();
-                let bucket = snapshotsByTimestamp.get(key);
+                let bucket = snapshotsByTimestamp.get(t);
                 if (!bucket) {
                     bucket = [];
-                    snapshotsByTimestamp.set(key, bucket);
+                    snapshotsByTimestamp.set(t, bucket);
                 }
                 bucket.push(snapshot);
             }
@@ -812,7 +883,7 @@ export const DASHBOARD_SCRIPT = `
                 startInput.value = '';
                 endInput.value = '';
                 clearSelection();
-                render();
+                scheduleRender();
                 return;
             }
             const durationMap = {
@@ -827,7 +898,7 @@ export const DASHBOARD_SCRIPT = `
             startInput.value = toInputValue(startDate);
             endInput.value = toInputValue(lastDate);
             clearSelection();
-            render();
+            scheduleRender();
         }
 
         function rowIndexFromClientX(clientX) {
@@ -893,7 +964,7 @@ export const DASHBOARD_SCRIPT = `
                         <div class="selection-metric">
                             <span>\${metricLabel}</span>
                             <strong>\${formatDelta(endValue - startValue)}</strong>
-                            <span>\${startValue.toFixed(3)} → \${endValue.toFixed(3)}</span>
+                            <span>\${startValue.toFixed(3)} \\u2192 \${endValue.toFixed(3)}</span>
                         </div>
                     \`);
                 }
@@ -1025,7 +1096,7 @@ export const DASHBOARD_SCRIPT = `
                     rows: [
                         ['Metric', OVERLAY_METRIC_LABELS[metricKey] || metricKey],
                         ['Current', formatJobMetricValue(metricKey, overlayMetricValueForRow(latestFairshareRow, metricKey))],
-                        ['Selection Δ', selectionMetricDelta === undefined ? '--' : formatJobMetricDelta(metricKey, selectionMetricDelta)],
+                        ['Selection \\u0394', selectionMetricDelta === undefined ? '--' : formatJobMetricDelta(metricKey, selectionMetricDelta)],
                         ['Selection span', selection ? formatDuration(currentRows[selection.startIndex].date, currentRows[selection.endIndex].date) : '--'],
                     ],
                 });
@@ -1165,11 +1236,11 @@ export const DASHBOARD_SCRIPT = `
                 return \`
                     <div class="eff-card">
                         <div class="eff-title">\${clusterLabel}</div>
-                        <div class="eff-row"><span>CPU fairshare Δ</span><strong>\${cpuDelta === undefined ? '--' : formatDelta(cpuDelta)}</strong></div>
-                        <div class="eff-row"><span>GPU fairshare Δ</span><strong>\${gpuDelta === undefined ? '--' : formatDelta(gpuDelta)}</strong></div>
-                        <div class="eff-row"><span>CPU fairshare Δ / CPU-hour</span><strong>\${cpuDelta === undefined || cpuHoursUsed <= 0 ? '--' : formatDelta(cpuDelta / cpuHoursUsed)}</strong></div>
-                        <div class="eff-row"><span>GPU fairshare Δ / GPU-hour</span><strong>\${gpuDelta === undefined || gpuHoursUsed <= 0 ? '--' : formatDelta(gpuDelta / gpuHoursUsed)}</strong></div>
-                        <div class="eff-row"><span>GPU fairshare Δ / distinct job</span><strong>\${gpuDelta === undefined || distinctJobs <= 0 ? '--' : formatDelta(gpuDelta / distinctJobs)}</strong></div>
+                        <div class="eff-row"><span>CPU fairshare \\u0394</span><strong>\${cpuDelta === undefined ? '--' : formatDelta(cpuDelta)}</strong></div>
+                        <div class="eff-row"><span>GPU fairshare \\u0394</span><strong>\${gpuDelta === undefined ? '--' : formatDelta(gpuDelta)}</strong></div>
+                        <div class="eff-row"><span>CPU fairshare \\u0394 / CPU-hour</span><strong>\${cpuDelta === undefined || cpuHoursUsed <= 0 ? '--' : formatDelta(cpuDelta / cpuHoursUsed)}</strong></div>
+                        <div class="eff-row"><span>GPU fairshare \\u0394 / GPU-hour</span><strong>\${gpuDelta === undefined || gpuHoursUsed <= 0 ? '--' : formatDelta(gpuDelta / gpuHoursUsed)}</strong></div>
+                        <div class="eff-row"><span>GPU fairshare \\u0394 / distinct job</span><strong>\${gpuDelta === undefined || distinctJobs <= 0 ? '--' : formatDelta(gpuDelta / distinctJobs)}</strong></div>
                         <div class="eff-row"><span>Average active jobs</span><strong>\${averageJobs === undefined ? '--' : averageJobs.toFixed(2)}</strong></div>
                         <div class="eff-row"><span>Schedulable GPU nodes</span><strong>\${formatJobMetricValue(clusterMetricKey(clusterKey, 'schedulable_gpu_nodes'), schedulableNodes)}</strong></div>
                         <div class="eff-row"><span>Down GPU nodes</span><strong>\${formatJobMetricValue(clusterMetricKey(clusterKey, 'down_gpu_nodes'), downNodes)}</strong></div>
@@ -1300,15 +1371,15 @@ export const DASHBOARD_SCRIPT = `
                 .sort((left, right) => right.date.getTime() - left.date.getTime());
             const visibleEvents = events.slice(0, 80);
 
-            const legend = Object.entries(EVENT_LABELS).map(([type, label]) => (
+            const legendHtml = Object.entries(EVENT_LABELS).map(([type, label]) => (
                 \`<span class="event-pill">\${eventShortSymbol(type)} \${label}</span>\`
             )).join('');
 
             const rowsHtml = visibleEvents.map((event) => {
                 const jobLabel = event.jobId ? \`\${event.name || '--'} (#\${event.jobId})\` : '--';
                 const stateLabel = event.type === 'queue_change'
-                    ? \`\${event.beforeJobs ?? '--'} → \${event.afterJobs ?? '--'}\`
-                    : [event.fromState || '', event.toState || ''].filter(Boolean).join(' → ') || '--';
+                    ? \`\${event.beforeJobs ?? '--'} \\u2192 \${event.afterJobs ?? '--'}\`
+                    : [event.fromState || '', event.toState || ''].filter(Boolean).join(' \\u2192 ') || '--';
                 return \`
                     <tr>
                         <td>\${formatTime(event.date)}</td>
@@ -1328,7 +1399,7 @@ export const DASHBOARD_SCRIPT = `
             eventTableView.innerHTML = \`
                 <div class="section-title">Job Event Log</div>
                 <div class="section-subtle">Showing \${visibleEvents.length} of \${events.length} events in the current \${displayedSelection() ? 'selection' : 'visible range'}.</div>
-                <div class="event-legend">\${legend}</div>
+                <div class="event-legend">\${legendHtml}</div>
                 <div class="event-table-wrap">
                     <table class="event-table">
                         <thead>
@@ -1351,7 +1422,29 @@ export const DASHBOARD_SCRIPT = `
             \`;
         }
 
-        function render() {
+        function scheduleRender() {
+            if (pendingRenderFrame) {
+                return;
+            }
+            pendingRenderFrame = requestAnimationFrame(() => {
+                pendingRenderFrame = null;
+                renderImmediate();
+            });
+        }
+
+        function scheduleDeferredSections(rows) {
+            if (pendingDeferredTimer) {
+                clearTimeout(pendingDeferredTimer);
+            }
+            pendingDeferredTimer = setTimeout(() => {
+                pendingDeferredTimer = null;
+                renderEfficiencyMetrics(rows);
+                renderLagCorrelation(rows);
+                renderEventTable(rows);
+            }, 0);
+        }
+
+        function renderImmediate() {
             const rows = currentRangeRows();
             currentRows = rows;
             currentJobRows = currentRangeJobRows();
@@ -1362,14 +1455,6 @@ export const DASHBOARD_SCRIPT = `
             const activeSeriesKeys = visibleSeriesKeys();
             const jobMetricKey = selectedJobMetric();
             updateLegend(rows, activeSeriesKeys);
-            const allValues = rows.flatMap((row) =>
-                activeSeriesKeys
-                    .map((seriesKey) => row.values[seriesKey])
-                    .filter((value) => typeof value === 'number')
-            );
-            const overlayValues = rows
-                .map((row) => overlayMetricValueForRow(row, jobMetricKey))
-                .filter((value) => typeof value === 'number');
 
             if (activeSeriesKeys.length === 0) {
                 svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" class="axis-label">Enable CPU or GPU to draw the graph.</text>';
@@ -1377,30 +1462,38 @@ export const DASHBOARD_SCRIPT = `
                 tooltip.classList.remove('visible');
                 renderSelectionSummary();
                 renderJobStats(rows);
-                renderEfficiencyMetrics(rows);
-                renderLagCorrelation(rows);
-                renderEventTable(rows);
+                scheduleDeferredSections(rows);
                 return;
             }
 
-            if (rows.length === 0 || allValues.length === 0) {
+            let valMin = Infinity;
+            let valMax = -Infinity;
+            for (const row of rows) {
+                for (const sk of activeSeriesKeys) {
+                    const v = row.values[sk];
+                    if (typeof v === 'number') {
+                        if (v < valMin) { valMin = v; }
+                        if (v > valMax) { valMax = v; }
+                    }
+                }
+            }
+
+            if (rows.length === 0 || valMin > valMax) {
                 svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" class="axis-label">No fairshare samples in this date range.</text>';
                 metrics.innerHTML = '';
                 tooltip.classList.remove('visible');
                 renderSelectionSummary();
                 renderJobStats(rows);
-                renderEfficiencyMetrics(rows);
-                renderLagCorrelation(rows);
-                renderEventTable(rows);
+                scheduleDeferredSections(rows);
                 return;
             }
 
-            const rawMin = Math.min(...allValues);
-            const rawMax = Math.max(...allValues);
+            const rawMin = valMin;
+            const rawMax = valMax;
             const spread = Math.max(rawMax - rawMin, 0.02);
-            const padding = spread * 0.12;
-            const yMin = Math.max(0, rawMin - padding);
-            const yMax = rawMax + padding;
+            const yPadding = spread * 0.12;
+            const yMin = Math.max(0, rawMin - yPadding);
+            const yMax = rawMax + yPadding;
             const effectiveSpread = Math.max(yMax - yMin, 0.02);
 
             const xForIndex = (index) => {
@@ -1430,8 +1523,19 @@ export const DASHBOARD_SCRIPT = `
                 const value = yMin + effectiveSpread * fraction;
                 return { value, y: yForValue(value) };
             });
-            const overlayMin = overlayValues.length > 0 ? Math.min(...overlayValues) : 0;
-            const overlayMax = overlayValues.length > 0 ? Math.max(...overlayValues) : 0;
+
+            const overlayValues = [];
+            if (jobMetricKey !== 'none') {
+                for (const row of rows) {
+                    const v = overlayMetricValueForRow(row, jobMetricKey);
+                    if (typeof v === 'number') {
+                        overlayValues.push(v);
+                    }
+                }
+            }
+            const overlayBounds = minMaxValues(overlayValues);
+            const overlayMin = overlayBounds.min;
+            const overlayMax = overlayBounds.max;
             const overlaySpread = Math.max(overlayMax - overlayMin, 1);
             const overlayPadding = overlaySpread * 0.12;
             const overlayYMin = overlayValues.length > 0 ? Math.max(0, overlayMin - overlayPadding) : 0;
@@ -1442,30 +1546,33 @@ export const DASHBOARD_SCRIPT = `
                 return CHART.padding.top + plotHeight - normalized * plotHeight;
             };
 
-            const series = activeSeriesKeys.map((seriesKey) => ({
-                seriesKey,
-                label: SERIES_LABELS[seriesKey],
-                color: SERIES_COLORS[seriesKey],
-                dasharray: SERIES_DASHARRAY[seriesKey],
-                points: rows
-                    .map((row, index) => ({
-                        rowIndex: index,
-                        timestamp: row.timestamp,
-                        date: row.date,
-                        value: row.values[seriesKey],
-                    }))
-                    .filter((point) => typeof point.value === 'number')
-                    .map((point) => ({ ...point, value: Number(point.value) })),
-            }));
+            const series = activeSeriesKeys.map((seriesKey) => {
+                const rawPoints = [];
+                for (let i = 0; i < rows.length; i++) {
+                    const value = rows[i].values[seriesKey];
+                    if (typeof value === 'number') {
+                        rawPoints.push({ rowIndex: i, timestamp: rows[i].timestamp, date: rows[i].date, value });
+                    }
+                }
+                return {
+                    seriesKey,
+                    label: SERIES_LABELS[seriesKey],
+                    color: SERIES_COLORS[seriesKey],
+                    dasharray: SERIES_DASHARRAY[seriesKey],
+                    points: rawPoints,
+                };
+            });
             currentSeries = series;
-            const overlaySeries = rows
-                .map((row, index) => ({
-                    rowIndex: index,
-                    date: row.date,
-                    value: overlayMetricValueForRow(row, jobMetricKey),
-                }))
-                .filter((point) => typeof point.value === 'number')
-                .map((point) => ({ ...point, value: Number(point.value) }));
+
+            const rawOverlaySeries = [];
+            if (jobMetricKey !== 'none') {
+                for (let i = 0; i < rows.length; i++) {
+                    const v = overlayMetricValueForRow(rows[i], jobMetricKey);
+                    if (typeof v === 'number') {
+                        rawOverlaySeries.push({ rowIndex: i, date: rows[i].date, value: v });
+                    }
+                }
+            }
 
             const firstTimestamp = formatTime(rows[0].date);
             const lastTimestamp = formatTime(rows[rows.length - 1].date);
@@ -1485,15 +1592,27 @@ export const DASHBOARD_SCRIPT = `
                 if (entry.points.length === 0) {
                     return '';
                 }
-                const polyline = entry.points
-                    .map((point) => \`\${xForIndex(point.rowIndex)},\${yForValue(point.value)}\`)
-                    .join(' ');
-                const dashAttribute = entry.dasharray ? \` stroke-dasharray="\${entry.dasharray}"\` : '';
-                return \`<polyline fill="none" stroke="\${entry.color}" stroke-width="3" points="\${polyline}" stroke-linejoin="round" stroke-linecap="round"\${dashAttribute}></polyline>\`;
+                const decimated = decimatePoints(entry.points, MAX_POLYLINE_POINTS);
+                const coords = new Array(decimated.length);
+                for (let i = 0; i < decimated.length; i++) {
+                    const p = decimated[i];
+                    coords[i] = xForIndex(p.rowIndex) + ',' + yForValue(p.value);
+                }
+                const dashAttribute = entry.dasharray ? ' stroke-dasharray="' + entry.dasharray + '"' : '';
+                return '<polyline fill="none" stroke="' + entry.color + '" stroke-width="3" points="' + coords.join(' ') + '" stroke-linejoin="round" stroke-linecap="round"' + dashAttribute + '></polyline>';
             }).join('');
-            const overlayPolyline = overlaySeries.length > 0
-                ? \`<polyline fill="none" stroke="#bfc7d5" stroke-width="2.5" points="\${overlaySeries.map((point) => \`\${xForIndex(point.rowIndex)},\${overlayYForValue(point.value)}\`).join(' ')}" stroke-linejoin="round" stroke-linecap="round" opacity="0.95"></polyline>\`
-                : '';
+
+            let overlayPolyline = '';
+            if (rawOverlaySeries.length > 0) {
+                const decimated = decimatePoints(rawOverlaySeries, MAX_POLYLINE_POINTS);
+                const coords = new Array(decimated.length);
+                for (let i = 0; i < decimated.length; i++) {
+                    const p = decimated[i];
+                    coords[i] = xForIndex(p.rowIndex) + ',' + overlayYForValue(p.value);
+                }
+                overlayPolyline = '<polyline fill="none" stroke="#bfc7d5" stroke-width="2.5" points="' + coords.join(' ') + '" stroke-linejoin="round" stroke-linecap="round" opacity="0.95"></polyline>';
+            }
+
             const overlayGrid = overlayValues.length > 0
                 ? gridFractions.map((fraction) => {
                     const value = overlayYMin + overlayEffectiveSpread * fraction;
@@ -1502,21 +1621,10 @@ export const DASHBOARD_SCRIPT = `
                 }).join('')
                 : '';
             const markerEvents = filteredEventsForRange(rows[0].date, rows[rows.length - 1].date);
-            const positionedEvents = markerEvents.map((event) => {
-                let bestIndex = 0;
-                let bestDelta = Number.POSITIVE_INFINITY;
-                for (let index = 0; index < rows.length; index += 1) {
-                    const delta = Math.abs(rows[index].date.getTime() - event.date.getTime());
-                    if (delta < bestDelta) {
-                        bestDelta = delta;
-                        bestIndex = index;
-                    }
-                }
-                return {
-                    ...event,
-                    rowIndex: bestIndex,
-                };
-            });
+            const positionedEvents = markerEvents.map((event) => ({
+                ...event,
+                rowIndex: binarySearchNearestIndex(rows, event.date.getTime()),
+            }));
             const runningIntervals = runningIntervalsForRange(rows[0].date, rows[rows.length - 1].date);
             const laidOutIntervals = layoutIntervalsIntoLanes(runningIntervals);
             const laneCount = laidOutIntervals.reduce((maxLane, span) => Math.max(maxLane, span.laneIndex + 1), 0);
@@ -1624,7 +1732,7 @@ export const DASHBOARD_SCRIPT = `
                 const eventRows = positionedEvents
                     .filter((event) => event.rowIndex === rowIndex)
                     .slice(0, 6)
-                    .map((event) => \`<div class="tooltip-row"><span class="tooltip-swatch" style="background:\${eventAccentColor(event)};"></span><span>\${eventShortSymbol(event.type)} \${formatEventType(event.type)} • \${eventsClusterLabel(event.remote)}</span><span class="tooltip-value">\${event.jobId ? \`#\${event.jobId}\` : (event.deltaJobs >= 0 ? \`+\${event.deltaJobs}\` : \`\${event.deltaJobs}\`)}</span></div>\`)
+                    .map((event) => \`<div class="tooltip-row"><span class="tooltip-swatch" style="background:\${eventAccentColor(event)};"></span><span>\${eventShortSymbol(event.type)} \${formatEventType(event.type)} \\u2022 \${eventsClusterLabel(event.remote)}</span><span class="tooltip-value">\${event.jobId ? \`#\${event.jobId}\` : (event.deltaJobs >= 0 ? \`+\${event.deltaJobs}\` : \`\${event.deltaJobs}\`)}</span></div>\`)
                     .join('');
 
                 tooltip.innerHTML = \`
@@ -1695,9 +1803,7 @@ export const DASHBOARD_SCRIPT = `
             renderSelectionVisual();
             renderSelectionSummary();
             renderJobStats(rows);
-            renderEfficiencyMetrics(rows);
-            renderLagCorrelation(rows);
-            renderEventTable(rows);
+            scheduleDeferredSections(rows);
             if (displayedSelection()) {
                 showSelectionEndHover();
             } else if (currentHoveredIndex !== null && currentHoveredIndex < rows.length) {
@@ -1713,33 +1819,33 @@ export const DASHBOARD_SCRIPT = `
         startInput.addEventListener('change', () => {
             setActivePreset('custom');
             clearSelection();
-            render();
+            scheduleRender();
         });
         endInput.addEventListener('change', () => {
             setActivePreset('custom');
             clearSelection();
-            render();
+            scheduleRender();
         });
         toggleCpu.addEventListener('change', () => {
             clearSelection();
-            render();
+            scheduleRender();
         });
         toggleGpu.addEventListener('change', () => {
             clearSelection();
-            render();
+            scheduleRender();
         });
         aggregationSelect.addEventListener('change', () => {
             clearSelection();
-            render();
+            scheduleRender();
         });
         clusterSelect.addEventListener('change', () => {
             clearSelection();
-            render();
+            scheduleRender();
         });
-        jobMetricSelect.addEventListener('change', () => render());
+        jobMetricSelect.addEventListener('change', () => scheduleRender());
         clearSelectionButton.addEventListener('click', () => {
             clearSelection();
-            render();
+            scheduleRender();
         });
         document.addEventListener('mousemove', (event) => {
             if (!isDragging) {
@@ -1768,7 +1874,7 @@ export const DASHBOARD_SCRIPT = `
             };
             dragAnchorIndex = null;
             dragCurrentIndex = null;
-            render();
+            scheduleRender();
         });
 
         initializeJobMetricSelect();
