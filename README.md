@@ -4,8 +4,6 @@ A VS Code extension that shows Slurm job status and fairshare history for one or
 
 The current version is **0.4.0**.
 
-![status bar example](https://raw.githubusercontent.com/devon7y/vscode-slurm-status-bar/blob/main/hpc_dashboard.png)
-
 ## What It Does
 
 ### Status bar line
@@ -30,7 +28,7 @@ Fir: 0.372 | Ror: 0.064 | Nibi: 0.774 | train_model (R) 1:23:45 | embed_docs (PD
 
 ### Dashboard panel
 
-<img width="1376" height="106" alt="dashboard" src="https://github.com/user-attachments/assets/76869906-5692-4dbe-a300-c958f5f0a720" />
+<img width="1151" height="806" alt="hpc_dashboard" src="https://github.com/user-attachments/assets/b65c78d0-b155-4526-9b39-4a5092d54d42" />
 
 - date-range presets (24H / 7D / 30D / 90D / 1Y / All) plus custom start/end
 - per-cluster scoping and CPU/GPU toggles
