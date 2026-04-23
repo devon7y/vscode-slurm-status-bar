@@ -4,7 +4,7 @@ A VS Code extension that shows Slurm job status and fairshare history for one or
 
 The current version is **0.4.0**.
 
-![status bar example](https://raw.githubusercontent.com/devon7y/vscode-slurm-status-bar/main/examples/screenshot.png)
+![status bar example](https://raw.githubusercontent.com/devon7y/vscode-slurm-status-bar/blob/main/hpc_dashboard.png)
 
 ## What It Does
 
