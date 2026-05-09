@@ -14,7 +14,7 @@ export const SHOW_FULL_STATUS_COMMAND = 'slurmStatusBar.showFullStatus';
 export const SHOW_FAIRSHARE_GRAPH_COMMAND = 'slurmStatusBar.showFairshareGraph';
 export const OPEN_FAIRSHARE_HISTORY_COMMAND = 'slurmStatusBar.openFairshareHistory';
 
-export const HISTORY_CLUSTERS = ['fir', 'ror', 'nibi', 'tril'] as const;
+export const HISTORY_CLUSTERS = ['fir', 'ror', 'nibi', 'tril', 'nar'] as const;
 export const FAIRSHARE_METRICS = ['cpu', 'gpu'] as const;
 export type HistoryCluster = typeof HISTORY_CLUSTERS[number];
 export type FairshareMetric = typeof FAIRSHARE_METRICS[number];
@@ -25,9 +25,10 @@ export const HISTORY_SERIES: HistorySeriesKey[] = [
     'ror_cpu', 'ror_gpu',
     'nibi_cpu', 'nibi_gpu',
     'tril_cpu', 'tril_gpu',
+    'nar_cpu', 'nar_gpu',
 ];
 
-export const STATUS_LABELS = ['Fir', 'Ror', 'Nibi', 'Tril'];
+export const STATUS_LABELS = ['Fir', 'Ror', 'Nibi', 'Tril', 'Nar'];
 export const SPARKLINE_BARS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 export const MAX_TOOLTIP_HISTORY_POINTS = 24;
 
@@ -36,6 +37,7 @@ export const CLUSTER_DISPLAY: Record<HistoryCluster, string> = {
     ror: 'Ror',
     nibi: 'Nibi',
     tril: 'Tril',
+    nar: 'Narval',
 };
 
 export const SERIES_DISPLAY: Record<HistorySeriesKey, string> = {
@@ -47,6 +49,8 @@ export const SERIES_DISPLAY: Record<HistorySeriesKey, string> = {
     nibi_gpu: 'Nibi GPU',
     tril_cpu: 'Trillium CPU',
     tril_gpu: 'Trillium GPU',
+    nar_cpu: 'Narval CPU',
+    nar_gpu: 'Narval GPU',
 };
 
 export const SERIES_COLORS: Record<HistorySeriesKey, string> = {
@@ -58,6 +62,8 @@ export const SERIES_COLORS: Record<HistorySeriesKey, string> = {
     nibi_gpu: '#51cf66',
     tril_cpu: '#ffd08a',
     tril_gpu: '#f59f00',
+    nar_cpu: '#d6b6ff',
+    nar_gpu: '#9b5de5',
 };
 
 export const SERIES_DASHARRAY: Record<HistorySeriesKey, string> = {
@@ -69,4 +75,6 @@ export const SERIES_DASHARRAY: Record<HistorySeriesKey, string> = {
     nibi_gpu: '',
     tril_cpu: '8 5',
     tril_gpu: '',
+    nar_cpu: '8 5',
+    nar_gpu: '',
 };

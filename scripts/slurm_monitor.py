@@ -33,8 +33,14 @@ DISABLE_FAIRSHARE_ENV = "SLURM_STATUS_BAR_DISABLE_FAIRSHARE"
 DISABLE_PASSCODE_FALLBACK_ENV = "SLURM_STATUS_BAR_DISABLE_PASSCODE_FALLBACK"
 REFRESH_INTERVAL = 60
 TIME_PATTERN = re.compile(r"^(?:(\d+)-)?(\d+(?::\d+){0,2})$")
-REMOTE_LABELS = {"fir": "Fir", "ror": "Ror", "nibi": "Nibi", "tril": "Tril"}
-HISTORY_REMOTES = ("fir", "ror", "nibi", "tril")
+REMOTE_LABELS = {
+    "fir": "Fir",
+    "ror": "Ror",
+    "nibi": "Nibi",
+    "tril": "Tril",
+    "nar": "Nar",
+}
+HISTORY_REMOTES = ("fir", "ror", "nibi", "tril", "nar")
 FAIRSHARE_RESOURCES = ("cpu", "gpu")
 FAIRSHARE_HISTORY_COLUMNS = [
     "timestamp",
@@ -558,6 +564,54 @@ def fetch_node_availability(remote: str) -> dict[str, str]:
 
     return {key: str(value) for key, value in counts.items()}
 
+def migrate_wide_history_file(
+    file_path: pathlib.Path,
+    expected_header: list[str],
+    context: str,
+) -> None:
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    if not file_path.exists() or file_path.stat().st_size == 0:
+        return
+
+    with file_path.open("r", newline="", encoding="utf-8") as handle:
+        rows = list(csv.reader(handle))
+
+    if not rows:
+        return
+
+    header = rows[0]
+    if header == expected_header:
+        return
+
+    expected_columns = set(expected_header)
+    if not header or header[0] != "timestamp":
+        log(
+            f"Warning: unrecognized {context} header; "
+            f"expected first column to be timestamp, got {header}"
+        )
+        return
+
+    unexpected = [column for column in header if column not in expected_columns]
+    if unexpected:
+        log(
+            f"Warning: unrecognized {context} columns {unexpected}; "
+            f"expected subset of {expected_header}"
+        )
+        return
+
+    migrated_rows: list[list[str]] = [expected_header]
+    for row in rows[1:]:
+        row_map = {
+            header[index]: row[index] if index < len(row) else ""
+            for index in range(len(header))
+        }
+        migrated_rows.append([row_map.get(column, "") for column in expected_header])
+
+    with file_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerows(migrated_rows)
+
+
 def migrate_fairshare_history() -> None:
     FAIRSHARE_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     if (
@@ -576,34 +630,35 @@ def migrate_fairshare_history() -> None:
     if header == FAIRSHARE_HISTORY_COLUMNS:
         return
 
-    legacy_header = ["timestamp", *HISTORY_REMOTES]
-    if header != legacy_header:
-        log(
-            "Warning: unrecognized fairshare history header; "
-            f"expected {legacy_header} or {FAIRSHARE_HISTORY_COLUMNS}, got {header}"
-        )
+    legacy_header = ["timestamp", "fir", "ror", "nibi", "tril"]
+    if header == legacy_header:
+        migrated_rows: list[list[str]] = [FAIRSHARE_HISTORY_COLUMNS]
+        for row in rows[1:]:
+            values = {
+                remote: row[index + 1] if index + 1 < len(row) else ""
+                for index, remote in enumerate(legacy_header[1:])
+            }
+            migrated_rows.append(
+                [
+                    row[0] if row else "",
+                    *[
+                        values.get(remote, "") if resource == "gpu" else ""
+                        for remote in HISTORY_REMOTES
+                        for resource in FAIRSHARE_RESOURCES
+                    ],
+                ]
+            )
+
+        with FAIRSHARE_HISTORY_FILE.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerows(migrated_rows)
         return
 
-    migrated_rows: list[list[str]] = [FAIRSHARE_HISTORY_COLUMNS]
-    for row in rows[1:]:
-        values = {
-            remote: row[index + 1] if index + 1 < len(row) else ""
-            for index, remote in enumerate(HISTORY_REMOTES)
-        }
-        migrated_rows.append(
-            [
-                row[0] if row else "",
-                *[
-                    values[remote] if resource == "gpu" else ""
-                    for remote in HISTORY_REMOTES
-                    for resource in FAIRSHARE_RESOURCES
-                ],
-            ]
-        )
-
-    with FAIRSHARE_HISTORY_FILE.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerows(migrated_rows)
+    migrate_wide_history_file(
+        FAIRSHARE_HISTORY_FILE,
+        FAIRSHARE_HISTORY_COLUMNS,
+        "fairshare history",
+    )
 
 
 def append_fairshare_history(snapshot: dict[str, dict[str, str]]) -> None:
@@ -634,6 +689,11 @@ def append_fairshare_history(snapshot: dict[str, dict[str, str]]) -> None:
 
 def append_node_history(snapshot: dict[str, dict[str, str]]) -> None:
     NODE_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    migrate_wide_history_file(
+        NODE_HISTORY_FILE,
+        NODE_HISTORY_COLUMNS,
+        "node history",
+    )
     write_header = (
         not NODE_HISTORY_FILE.exists()
         or NODE_HISTORY_FILE.stat().st_size == 0
@@ -680,6 +740,11 @@ def append_job_history(
     remotes: list[str],
 ) -> None:
     JOB_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    migrate_wide_history_file(
+        JOB_HISTORY_FILE,
+        JOB_HISTORY_COLUMNS,
+        "job history",
+    )
     write_header = (
         not JOB_HISTORY_FILE.exists()
         or JOB_HISTORY_FILE.stat().st_size == 0
@@ -840,6 +905,14 @@ def refresh_jobs(
             jobs = fetch_jobs(remote, user)
         except Exception as exc:  # noqa: BLE001
             log(f"Warning: failed to query {remote}: {exc}")
+            fairshare_by_remote[remote] = "?"
+            stale_keys = [
+                job_key
+                for job_key in jobs_by_key
+                if job_key.startswith(f"{remote}:")
+            ]
+            for stale_key in stale_keys:
+                jobs_by_key.pop(stale_key, None)
             continue
 
         try:
@@ -848,6 +921,7 @@ def refresh_jobs(
             fairshare_snapshot[remote] = fairshare
         except Exception as exc:  # noqa: BLE001
             log(f"Warning: failed to fetch fairshare for {remote}: {exc}")
+            fairshare_by_remote[remote] = "?"
 
         try:
             node_snapshot[remote] = fetch_node_availability(remote)
@@ -928,7 +1002,7 @@ def write_status(output: str) -> None:
 
 
 def main() -> int:
-    remotes = sys.argv[1:] or ["fir", "ror", "nibi", "tril"]
+    remotes = sys.argv[1:] or ["fir", "ror", "nibi", "tril", "nar"]
     user = os.environ.get("SLURM_STATUS_BAR_REMOTE_USER", getpass.getuser())
     jobs_by_key: dict[str, JobState] = {}
     fairshare_by_remote: dict[str, str] = {}

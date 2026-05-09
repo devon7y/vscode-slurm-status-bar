@@ -30,6 +30,7 @@ function humanizeJobMetricLabel(metricKey: string): string {
             if (lower === 'ror') { return 'Rorqual'; }
             if (lower === 'nibi') { return 'Nibi'; }
             if (lower === 'tril') { return 'Trillium'; }
+            if (lower === 'nar') { return 'Narval'; }
             return part.charAt(0).toUpperCase() + part.slice(1);
         })
         .join(' ');
@@ -149,6 +150,7 @@ export function buildFairshareGraphHtml(
                 <option value="ror">Rorqual</option>
                 <option value="nibi">Nibi</option>
                 <option value="tril">Trillium</option>
+                <option value="nar">Narval</option>
             </select>
             <select id="jobMetricSelect" class="metric-select"></select>
             <button id="clearSelection" class="secondary-button" type="button">Clear Selection</button>
